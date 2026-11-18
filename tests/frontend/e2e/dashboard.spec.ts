@@ -36,10 +36,11 @@ test('keeps chat projects when tab IDs change and offers links to closed convers
   await page.goto('/LllmFacade/');
   await page.getByPlaceholder('Nuovo progetto...').fill('Cliente Alfa');
   await page.getByRole('button', { name: 'Aggiungi progetto' }).click();
-  // New projects are selected automatically; unassigned tabs live in 'Tutte le chat'.
-  await page.locator('aside.sidebar > button.nav-item').click();
+  // Starting from a freshly selected project, help the user assign an unassigned chat.
   await page.getByRole('textbox', { name: 'ID estensione Chrome' }).fill('a'.repeat(32));
   await page.getByRole('button', { name: 'Connetti', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Nessuna chat in questo progetto' })).toBeVisible();
+  await page.getByRole('button', { name: 'Mostra tutte le chat per assegnarle' }).click();
   await expect(page.locator('.chat-card')).toHaveCount(1);
   await expect(page.getByText('Associazione permanente alla conversazione')).toBeVisible();
   await page.locator('.chat-card select').selectOption({ label: 'Cliente Alfa' });
