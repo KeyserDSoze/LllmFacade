@@ -2,7 +2,9 @@
   <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../business/LllmFacade.Business/LllmFacade.Business.csproj" />
-    <ProjectReference Include="../../infrastructures/LllmFacade.Infrastructure.Memory/LllmFacade.Infrastructure.Memory.csproj" />
+    <ProjectReference Include="../../infrastructures/LllmFacade.Infrastructure.Postgres/LllmFacade.Infrastructure.Postgres.csproj" />
+    <ProjectReference Include="../../infrastructures/LllmFacade.Infrastructure.Browser/LllmFacade.Infrastructure.Browser.csproj" />
+    <InternalsVisibleTo Include="LllmFacade.Api.Tests" />
   </ItemGroup>
 </Project>
 
