@@ -31,6 +31,21 @@ curl http://127.0.0.1:63400/v1/chat/completions \
 
 ## Come funziona
 
+### Browser collegato (consigliato per Cloudflare)
+
+Il browser visibile del tuo PC resta il proprietario della sessione. Il backend si collega a Chrome/Edge con CDP e apre **solo nuove schede ChatGPT che gestisce lui**; non legge, naviga o chiude le altre schede. I cookie, lo storage, la lingua, il fuso, lo user agent e gli header restano quelli reali del browser: in questa modalità i valori copiati a mano non vengono sovrapposti. La richiesta parte da `window.fetch` della pagina ChatGPT o dal form del composer. Se ChatGPT mostra una verifica, la fai manualmente nel browser collegato; il backend non la risolve né la aggira.
+
+```powershell
+pwsh -File script/start-chatgpt-browser.ps1
+# accedi una volta a ChatGPT nella finestra aperta
+# in .env: BROWSER_CDP_URL=http://host.docker.internal:63401
+docker compose up -d --force-recreate api
+```
+
+Lo script usa un profilo Chrome/Edge dedicato (visibile, non headless), con CDP ascolta solo sulla porta locale `127.0.0.1:63401`; non serve esporre quella porta nel `docker-compose.yml`. Premi **Rinnova sessione ora** dopo il login. Se `BROWSER_CDP_URL` è vuoto si usa la modalità predefinita: Chromium headless isolato nel container.
+
+### Modalità headless predefinita
+
 - Un solo Chromium headless per processo, un contesto (cookie jar) isolato per endpoint, con user agent, lingua, fuso e header configurati.
 - Ogni richiesta passa dalla pagina di ChatGPT: la web app invia il proprio POST, il backend ne sostituisce modello/thinking/prompt e ne copia lo stream SSE. Lettura di project e chat tramite `fetch` nella pagina con il token Bearer, come la web app.
 - I cookie del browser sono ricavati dopo ogni uso e salvati cifrati se cambiati. Un cookie incollato come header `Cookie` e poi riemesso da ChatGPT sotto un altro scope sostituisce quello importato.
@@ -41,7 +56,7 @@ curl http://127.0.0.1:63400/v1/chat/completions \
 
 ## Configurazione
 
-Variabili d'ambiente (doppio underscore): `ConnectionStrings__Postgres`, `DataProtection__KeysPath`, `Admin__*`, `Workers__*`, `Autopilot__*`, `Browser__*`, `ChatGpt__*` (percorsi e selettori della web app).
+Variabili d'ambiente (doppio underscore): `ConnectionStrings__Postgres`, `DataProtection__KeysPath`, `Admin__*`, `Workers__*`, `Autopilot__*`, `Browser__*`, `ChatGpt__*` (percorsi e selettori della web app). Per il browser collegato Compose usa `BROWSER_CDP_URL` e la trasforma in `Browser__ConnectOverCdpUrl`; sono accettati solo endpoint locali.
 
 ## Test
 

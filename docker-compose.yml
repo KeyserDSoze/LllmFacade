@@ -23,11 +23,14 @@ services:
     environment:
       ConnectionStrings__Postgres: Host=postgres;Database=lllmfacade;Username=lllmfacade;Password=${POSTGRES_PASSWORD}
       Admin__RequireHttpsCookie: ${LLLMFACADE_HTTPS_COOKIE:-false}
+      Browser__ConnectOverCdpUrl: ${BROWSER_CDP_URL:-}
     ports:
       # Local only by default: publish through an HTTPS reverse proxy before exposing it.
       - "127.0.0.1:${LLLMFACADE_PORT:-63400}:8080"
     volumes:
       - api-keys:/data/keys
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Chromium needs more shared memory than the Docker default (64 MB).
     shm_size: 1gb
     restart: unless-stopped

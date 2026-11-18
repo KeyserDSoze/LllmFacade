@@ -272,10 +272,10 @@ public sealed partial class PlaywrightChatGptClient(
                 throw new ChatGptException(ChatGptFailure.Busy, "Troppe richieste contemporanee per questo endpoint: riprovare più tardi.");
 
             var signals = Channel.CreateUnbounded<(string Kind, string Data)>();
-            page = await session.Context.NewPageAsync();
+            page = await session.NewOwnedPageAsync();
             await page.ExposeFunctionAsync<string, string, bool>("__lfStream", (kind, data) => signals.Writer.TryWrite((kind, data)));
             await OpenComposerAsync(page, NewChatUrl(command));
-            await page.Locator(_web.PromptSelector).First.FillAsync(command.Prompt);
+            await TypePromptAsync(page, command.Prompt);
             await page.EvaluateAsync("next => { window.__lfNext = next; }", new
             {
                 model = command.UpstreamModel,
@@ -406,11 +406,25 @@ public sealed partial class PlaywrightChatGptClient(
     {
         try
         {
-            await page.Locator(_web.SendButtonSelector).First.ClickAsync(new LocatorClickOptions { Timeout = 15_000 });
+            // The send button only exists once the composer has text, and its markup changes often: Enter is the fallback.
+            await page.Locator(_web.SendButtonSelector).First.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
         }
         catch (TimeoutException)
         {
             await page.Locator(_web.PromptSelector).First.PressAsync("Enter");
+        }
+    }
+
+    /// <summary>Fills the composer; some rich-text editors ignore Fill, so text is inserted at the cursor when the box stays empty.</summary>
+    private async Task TypePromptAsync(IPage page, string prompt)
+    {
+        var box = page.Locator(_web.PromptSelector).First;
+        await box.FillAsync(prompt);
+        var current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            await box.FocusAsync();
+            await page.Keyboard.InsertTextAsync(prompt);
         }
     }
 
@@ -491,7 +505,7 @@ public sealed partial class PlaywrightChatGptClient(
     }
 
     private static ChatGptException Blocked() => new(ChatGptFailure.Blocked,
-        "ChatGPT ha richiesto una verifica anti-bot (Cloudflare): il browser automatico è stato bloccato.");
+        "ChatGPT richiede una verifica di sicurezza nella pagina. Completarla manualmente nel browser collegato; il controllo non viene aggirato e l'autopilot riproverà successivamente.");
 
     private static Exception Translate(Exception error, CancellationToken cancellationToken) => error switch
     {

@@ -149,6 +149,11 @@ test('gives visible feedback when saving settings succeeds or fails', async ({ p
 test('shows active projects as a mosaic and remembers the chosen grid', async ({ page }) => {
   const backend = FakeBackend.withEndpoint();
   for (const name of ['Alpha', 'Beta', 'Gamma', 'Delta']) backend.track(`g-p-${name.toLowerCase()}`, name);
+  Object.assign(backend.tracked[0], {
+    autopilotEnabled: true,
+    status: 'WaitingRetry',
+    lastError: 'ChatGPT non disponibile: il browser mostra la verifica di sicurezza e il messaggio resta visibile finché non la completi manualmente.'
+  });
   await backend.install(page);
 
   await page.goto('/#/attivi');
@@ -160,6 +165,13 @@ test('shows active projects as a mosaic and remembers the chosen grid', async ({
   await page.getByRole('radio', { name: '4 per riga' }).click();
   await expect(page.getByRole('radio', { name: '4 per riga' })).toHaveAttribute('aria-checked', 'true');
   await expect.poll(columns).toBe(4);
+  const horizontalOverflow = await page.getByRole('article').evaluateAll(tiles => tiles.flatMap(tile => {
+    const elements = [tile, ...tile.querySelectorAll<HTMLElement>('*')];
+    return elements.filter(element => element.scrollWidth > element.clientWidth + 2
+      && (element === tile || getComputedStyle(element).overflowX === 'visible'))
+      .map(element => `${element.tagName}.${element.className || ''}:${element.clientWidth}/${element.scrollWidth}`);
+  }));
+  expect(horizontalOverflow).toEqual([]);
   await page.getByRole('radio', { name: '1 per riga' }).click();
   await expect.poll(columns).toBe(1);
 

@@ -8,6 +8,8 @@ namespace LllmFacade.Infrastructure.Browser;
 public sealed class BrowserOptions
 {
     public bool Headless { get; set; } = true;
+    /// <summary>Connects to a browser the user opened and approved instead of launching a separate headless browser.</summary>
+    public string? ConnectOverCdpUrl { get; set; }
     /// <summary>Playwright channel, e.g. "chromium" for the new headless mode of the full browser.</summary>
     public string? Channel { get; set; }
     public string? ExecutablePath { get; set; }
@@ -39,8 +41,12 @@ public sealed class ChatGptWebOptions
         "maximum length for this conversation|reached the maximum length|conversation is too long|lunghezza massima|conversazione .{0,20}troppo lunga";
     public string TemporaryChatQuery { get; set; } = "temporary-chat=true";
     public string ConversationStreamPattern { get; set; } = "^/backend-api/(f/)?conversation$";
-    public string PromptSelector { get; set; } = "#prompt-textarea";
-    public string SendButtonSelector { get; set; } = "[data-testid='send-button'], #composer-submit-button";
+    // The current web app has no #prompt-textarea: the composer is a contenteditable textbox inside form[data-chatgpt-composer].
+    public string PromptSelector { get; set; } =
+        "#prompt-textarea, form[data-chatgpt-composer] [contenteditable='true'][role='textbox'], [data-composer-markdown][contenteditable='true']";
+    public string SendButtonSelector { get; set; } =
+        "[data-testid='send-button'], #composer-submit-button, form[data-chatgpt-composer] button[type='submit'], " +
+        "button[aria-label='Send prompt'], button[aria-label='Send message'], button[aria-label='Invia prompt'], button[aria-label='Invia messaggio']";
     public string StopButtonSelector { get; set; } = "[data-testid='stop-button']";
     public string AssistantMessageSelector { get; set; } = "[data-message-author-role='assistant']";
     public string LoginSelector { get; set; } = "[data-testid='login-button']";

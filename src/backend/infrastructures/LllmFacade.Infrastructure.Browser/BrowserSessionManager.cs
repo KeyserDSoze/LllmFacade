@@ -17,6 +17,7 @@ public sealed class BrowserSessionManager(
     private readonly BrowserOptions _browserOptions = browserOptions.Value;
     private readonly ChatGptWebOptions _webOptions = webOptions.Value;
     private readonly SemaphoreSlim _launchLock = new(1, 1);
+    private static readonly HttpClient CdpHttp = new() { Timeout = TimeSpan.FromSeconds(10) };
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _locks = new();
     private readonly ConcurrentDictionary<Guid, EndpointBrowserSession> _sessions = new();
     private IPlaywright? _playwright;
@@ -74,25 +75,36 @@ public sealed class BrowserSessionManager(
     private async Task<EndpointBrowserSession> CreateAsync(ChatGptIdentity identity, string fingerprint)
     {
         var browser = await GetBrowserAsync();
-        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        var attached = !string.IsNullOrWhiteSpace(_browserOptions.ConnectOverCdpUrl);
+        IBrowserContext context;
+        if (attached)
         {
-            UserAgent = identity.UserAgent,
-            Locale = identity.Locale,
-            TimezoneId = identity.TimeZone,
-            ExtraHTTPHeaders = identity.ExtraHeaders,
-            StorageState = identity.StorageStateJson,
-            ViewportSize = new ViewportSize { Width = _browserOptions.ViewportWidth, Height = _browserOptions.ViewportHeight },
-            ServiceWorkers = ServiceWorkerPolicy.Block
-        });
-        var timeout = (float)TimeSpan.FromSeconds(_browserOptions.NavigationTimeoutSeconds).TotalMilliseconds;
-        context.SetDefaultTimeout(timeout);
-        context.SetDefaultNavigationTimeout(timeout);
-        await context.AddInitScriptAsync(FetchHookScript.Build(_webOptions.Origin, _webOptions.ConversationStreamPattern));
-        foreach (var configurator in configurators)
-            await configurator.ConfigureAsync(context);
+            context = browser.Contexts.FirstOrDefault()
+                ?? throw new InvalidOperationException("Il browser collegato non espone un contesto: aprire Chrome normalmente e collegarsi di nuovo.");
+            logger.LogInformation("Contesto Chromium collegato a CDP usato per l'endpoint {EndpointId}.", identity.EndpointId);
+        }
+        else
+        {
+            context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                UserAgent = identity.UserAgent,
+                Locale = identity.Locale,
+                TimezoneId = identity.TimeZone,
+                ExtraHTTPHeaders = identity.ExtraHeaders,
+                StorageState = identity.StorageStateJson,
+                ViewportSize = new ViewportSize { Width = _browserOptions.ViewportWidth, Height = _browserOptions.ViewportHeight },
+                ServiceWorkers = ServiceWorkerPolicy.Block
+            });
+            var timeout = (float)TimeSpan.FromSeconds(_browserOptions.NavigationTimeoutSeconds).TotalMilliseconds;
+            context.SetDefaultTimeout(timeout);
+            context.SetDefaultNavigationTimeout(timeout);
+            await context.AddInitScriptAsync(FetchHookScript.Build(_webOptions.Origin, _webOptions.ConversationStreamPattern));
+            foreach (var configurator in configurators)
+                await configurator.ConfigureAsync(context);
+            logger.LogInformation("Contesto browser isolato creato per l'endpoint {EndpointId}.", identity.EndpointId);
+        }
 
-        logger.LogInformation("Contesto browser creato per l'endpoint {EndpointId}.", identity.EndpointId);
-        return new EndpointBrowserSession(identity, fingerprint, context, _webOptions, _browserOptions);
+        return new EndpointBrowserSession(identity, fingerprint, context, _webOptions, _browserOptions, ownsContext: !attached);
     }
 
     private async Task<IBrowser> GetBrowserAsync()
@@ -103,6 +115,18 @@ public sealed class BrowserSessionManager(
             if (_browser is { IsConnected: true })
                 return _browser;
             _playwright ??= await Playwright.CreateAsync();
+            if (_browserOptions.ConnectOverCdpUrl is { Length: > 0 } cdpUrl)
+            {
+                var endpoint = BrowserCdp.ParseEndpoint(cdpUrl);
+                var webSocket = await BrowserCdp.ResolveWebSocketAsync(CdpHttp, cdpUrl);
+                _browser = await _playwright.Chromium.ConnectOverCDPAsync(webSocket, new BrowserTypeConnectOverCDPOptions
+                {
+                    Headers = new Dictionary<string, string> { ["Host"] = BrowserCdp.HostHeader(endpoint) }
+                });
+                logger.LogInformation("Collegato al browser Chromium già aperto dall'utente (versione {Version}).", _browser.Version);
+                return _browser;
+            }
+
             _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 Headless = _browserOptions.Headless,
@@ -132,7 +156,7 @@ public sealed class BrowserSessionManager(
     {
         foreach (var endpointId in _sessions.Keys)
             await ReleaseAsync(endpointId);
-        if (_browser is not null)
+        if (_browser is not null && string.IsNullOrWhiteSpace(_browserOptions.ConnectOverCdpUrl))
             await _browser.CloseAsync();
         _playwright?.Dispose();
     }
@@ -146,12 +170,16 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
     private readonly SemaphoreSlim _tabLock = new(1, 1);
     private readonly SemaphoreSlim _tabSlots;
     private readonly ConcurrentDictionary<string, ProjectTab> _tabs = new();
+    private readonly ConcurrentDictionary<IPage, byte> _ownedPages = new();
     private readonly Dictionary<(string Name, string Domain, string Path), string> _initialValues;
+    private readonly bool _ownsContext;
+    private readonly string _initScript;
     private IPage? _controlPage;
     private volatile bool _closed;
 
     public EndpointBrowserSession(
-        ChatGptIdentity identity, string fingerprint, IBrowserContext context, ChatGptWebOptions web, BrowserOptions browser)
+        ChatGptIdentity identity, string fingerprint, IBrowserContext context, ChatGptWebOptions web, BrowserOptions browser,
+        bool ownsContext = true)
     {
         EndpointId = identity.EndpointId;
         CredentialsStamp = identity.CredentialsStamp;
@@ -163,6 +191,8 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         PageSlots = new SemaphoreSlim(browser.MaxPagesPerEndpoint);
         _tabSlots = new SemaphoreSlim(browser.MaxTabsPerEndpoint);
         _initialValues = ReadCookies(identity.StorageStateJson, web.Host);
+        _ownsContext = ownsContext;
+        _initScript = FetchHookScript.Build(web.Origin, web.ConversationStreamPattern);
         context.Close += (_, _) => _closed = true;
     }
 
@@ -174,6 +204,18 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
     public string? AccessToken { get; set; }
     public bool IsUsable => !_closed;
 
+    internal async Task<IPage> NewOwnedPageAsync()
+    {
+        var page = await Context.NewPageAsync();
+        _ownedPages[page] = 0;
+        page.Close += (_, _) => _ownedPages.TryRemove(page, out _);
+        var timeout = (float)TimeSpan.FromSeconds(_browser.NavigationTimeoutSeconds).TotalMilliseconds;
+        page.SetDefaultTimeout(timeout);
+        page.SetDefaultNavigationTimeout(timeout);
+        await page.AddInitScriptAsync(_initScript);
+        return page;
+    }
+
     /// <summary>Runs <paramref name="action"/> on a same-origin page, the place where the web app itself calls its backend.</summary>
     public async Task<T> WithControlPageAsync<T>(Func<IPage, Task<T>> action, CancellationToken cancellationToken)
     {
@@ -181,7 +223,7 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         try
         {
             if (_controlPage is null || _controlPage.IsClosed)
-                _controlPage = await Context.NewPageAsync();
+                _controlPage = await NewOwnedPageAsync();
             if (!_controlPage.Url.StartsWith(_web.Origin + "/", StringComparison.Ordinal))
                 await _controlPage.GotoAsync(_web.Url(_web.HomePath), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
             return await action(_controlPage);
@@ -203,7 +245,7 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
                 throw new ChatGptException(ChatGptFailure.Busy, "Troppe schede aperte per questo endpoint.");
             try
             {
-                var page = await Context.NewPageAsync();
+                var page = await NewOwnedPageAsync();
                 var tab = new ProjectTab(page);
                 await page.ExposeFunctionAsync<string, string, bool>("__lfStream", tab.OnSignal);
                 page.Close += (_, _) =>
@@ -243,7 +285,9 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         // A pasted Cookie header cannot tell host-only from domain cookies: when the site re-issues a cookie under
         // the other variant, the imported value is stale and would still be sent first, so it is removed.
         var sameCookie = cookies.GroupBy(c => (c.Name, c.Path, Host: c.Domain.TrimStart('.').ToLowerInvariant()));
-        foreach (var variants in sameCookie.Where(group => group.Count() > 1).Select(group => group.ToList()))
+        foreach (var variants in _ownsContext
+                     ? sameCookie.Where(group => group.Count() > 1).Select(group => group.ToList())
+                     : [])
         {
             var stale = variants
                 .Where(c => _initialValues.TryGetValue((c.Name, c.Domain, c.Path), out var initial) && initial == c.Value)
@@ -279,7 +323,24 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         _closed = true;
         try
         {
-            await Context.CloseAsync();
+            if (_ownsContext)
+            {
+                await Context.CloseAsync();
+                return;
+            }
+
+            foreach (var page in _ownedPages.Keys.ToArray())
+            {
+                try
+                {
+                    await page.CloseAsync();
+                }
+                catch (PlaywrightException)
+                {
+                }
+            }
+            _controlPage = null;
+            _tabs.Clear();
         }
         catch (PlaywrightException)
         {
