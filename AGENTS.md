@@ -27,6 +27,7 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 - `cd src/frontend && npm install && npm run build`
 - `cd tests/frontend && npm install && npm run test:unit`
 - `node --test tests/extension/*.test.cjs`
+- `node --test tests/security/*.test.mjs` e `node script/npm-audit-report.mjs` per l'inventario npm
 - `node --check src/extension/background.js`
 - `node --check src/desktop/main.cjs`
 - `dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj` (SDK 10)

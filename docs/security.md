@@ -12,3 +12,7 @@
 
 - Le assegnazioni temporanee `tab:{id}` non vengono salvate; la storage key `lllmfacade.assignments.v2` conserva esclusivamente ID conversazione e progetto. Il vecchio storage v1 viene ignorato per evitare collisioni di tab ID.
 
+
+## Controllo delle dipendenze JavaScript (issue #9)
+
+Il workflow `dependency-audit.yml` registra i risultati di `npm audit` per `src/frontend`, `tests/frontend` e `src/desktop`, distinguendo dipendenze di produzione e sviluppo. Durante l'inventario iniziale è **diagnostico**; la CI non va considerata una prova di assenza di vulnerabilità finché non viene attivata la modalità `--strict` e non vengono fissati lockfile riproducibili. Il comando locale è `node script/npm-audit-report.mjs`. Gli advisory indicano pacchetti potenzialmente vulnerabili, da analizzare per l'esposizione reale prima di decidere una remediation o eccezione.
