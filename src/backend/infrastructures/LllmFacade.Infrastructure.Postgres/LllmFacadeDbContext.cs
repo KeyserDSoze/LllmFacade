@@ -13,9 +13,21 @@ public sealed class LllmFacadeDbContext(DbContextOptions<LllmFacadeDbContext> op
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<ChatGptEndpoint> Endpoints => Set<ChatGptEndpoint>();
     public DbSet<TrackedProject> Projects => Set<TrackedProject>();
+    public DbSet<ActivityLogEntry> ActivityLog => Set<ActivityLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<ActivityLogEntry>(entry =>
+        {
+            entry.ToTable("activity_log");
+            entry.Property(x => x.Level).HasConversion<string>().HasMaxLength(10);
+            entry.Property(x => x.Category).HasMaxLength(20);
+            entry.Property(x => x.Message).HasMaxLength(1000);
+            entry.Property(x => x.Subject).HasMaxLength(200);
+            entry.HasIndex(x => x.At);
+            entry.HasIndex(x => new { x.ProjectId, x.Id });
+        });
+
         modelBuilder.Entity<AdminUser>(user =>
         {
             user.ToTable("admin_users");

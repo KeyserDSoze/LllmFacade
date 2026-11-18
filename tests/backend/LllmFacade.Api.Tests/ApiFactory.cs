@@ -113,7 +113,7 @@ public static class Api
         name = "Account principale",
         models = new[]
         {
-            new { name = "chatgpt-thinking", upstreamModel = "gpt-5-thinking", defaultReasoningEffort = "medium" },
+            new { name = "chatgpt-thinking", upstreamModel = "gpt-5-thinking", defaultReasoningEffort = (string?)"medium" },
             new { name = "chatgpt-auto", upstreamModel = "auto", defaultReasoningEffort = (string?)null }
         },
         thinkingEfforts = new Dictionary<string, string> { ["medium"] = "standard", ["high"] = "extended" },

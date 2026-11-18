@@ -37,6 +37,7 @@ public sealed class SessionRefreshProcessor(
     CredentialProtector protector,
     IChatGptClient client,
     TimeProvider time,
+    ActivityLog activity,
     ILogger<SessionRefreshProcessor> logger)
 {
     public async Task<int> RefreshDueAsync(CancellationToken cancellationToken)
@@ -50,7 +51,7 @@ public sealed class SessionRefreshProcessor(
         return due.Count;
     }
 
-    public async Task RefreshAsync(ChatGptEndpoint endpoint, CancellationToken cancellationToken)
+    public async Task RefreshAsync(ChatGptEndpoint endpoint, CancellationToken cancellationToken, bool manual = false)
     {
         var now = time.GetUtcNow();
         try
@@ -76,6 +77,9 @@ public sealed class SessionRefreshProcessor(
                     .SetProperty(e => e.LastRefreshAttemptAt, now)
                     .SetProperty(e => e.LastError, (string?)null)
                     .SetProperty(e => e.LastErrorAt, (DateTimeOffset?)null), cancellationToken);
+            await activity.InfoAsync(ActivityCategories.Session,
+                $"Sessione rinnovata{(manual ? " su richiesta" : string.Empty)}: {cookieCount} cookie, token {(expiresAt is { } valid ? "valido fino al " + valid.ToString("dd/MM/yyyy HH:mm 'UTC'") : "senza scadenza nota")}.",
+                endpoint.Id, subject: endpoint.Name);
         }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -85,6 +89,9 @@ public sealed class SessionRefreshProcessor(
                 .SetProperty(e => e.LastRefreshAttemptAt, now)
                 .SetProperty(e => e.LastError, message)
                 .SetProperty(e => e.LastErrorAt, now), CancellationToken.None);
+            if (manual || endpoint.LastError != message)
+                await activity.WarnAsync(ActivityCategories.Session, "Rinnovo sessione non riuscito: " + message,
+                    endpoint.Id, subject: endpoint.Name);
         }
     }
 
@@ -111,6 +118,27 @@ public sealed class SessionRefreshWorker(
             catch (Exception error) when (!stoppingToken.IsCancellationRequested)
             {
                 logger.LogError(error, "Ciclo di rinnovo delle sessioni non riuscito.");
+            }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+}
+
+/// <summary>Deletes activity log entries older than the configured retention, once an hour.</summary>
+public sealed class LogRetentionWorker(ActivityLog activity, ILogger<LogRetentionWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
+        do
+        {
+            try
+            {
+                await activity.PruneAsync(stoppingToken);
+            }
+            catch (Exception error) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError(error, "Pulizia del registro attività non riuscita.");
             }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
@@ -144,6 +172,7 @@ public sealed class AutopilotProcessor(
     IChatGptClient client,
     ProjectEventHub hub,
     TimeProvider time,
+    ActivityLog activity,
     IOptions<AutopilotOptions> options,
     ILogger<AutopilotProcessor> logger)
 {
@@ -166,6 +195,7 @@ public sealed class AutopilotProcessor(
             return;
 
         var settings = options.Value.ToSettings();
+        var before = Snapshot(project);
         try
         {
             var identity = identities.CreateIdentity(endpoint);
@@ -197,8 +227,13 @@ public sealed class AutopilotProcessor(
             return;
         }
         hub.PublishStatus(project);
+        foreach (var entry in AutopilotLogRules.Describe(before, Snapshot(project)))
+            await activity.WriteAsync(entry.Level, ActivityCategories.Autopilot, entry.Message, project.EndpointId, project.Id, project.Name);
         await identities.PersistBrowserStateAsync(endpoint, CancellationToken.None);
     }
+
+    private static AutopilotSnapshot Snapshot(TrackedProject project) =>
+        new(project.Status, project.LastError, project.ConsecutiveFailures, project.ContinuationsSent, project.MaxContinuations);
 
     private async Task SubmitAsync(
         TrackedProject project, ChatGptIdentity identity, string conversationId, ConversationState state, AutopilotSettings settings,

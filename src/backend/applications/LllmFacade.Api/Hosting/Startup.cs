@@ -37,6 +37,8 @@ public static class Startup
         services.AddSingleton<CredentialProtector>();
         services.AddSingleton<ProjectEventHub>();
         services.AddSingleton<AutopilotSignal>();
+        services.AddSingleton<ActivityLog>();
+        services.Configure<LogOptions>(configuration.GetSection("Logs"));
         services.AddScoped<EndpointIdentityService>();
         services.AddScoped<SessionRefreshProcessor>();
         services.AddScoped<AutopilotProcessor>();
@@ -51,6 +53,7 @@ public static class Startup
         {
             services.AddHostedService<SessionRefreshWorker>();
             services.AddHostedService<AutopilotWorker>();
+            services.AddHostedService<LogRetentionWorker>();
         }
         return builder;
     }
@@ -88,6 +91,7 @@ public static class Startup
         app.MapAdminAuthApi();
         app.MapEndpointAdminApi();
         app.MapProjectAdminApi();
+        app.MapActivityLogApi();
         app.MapOpenAiApi();
         return app;
     }

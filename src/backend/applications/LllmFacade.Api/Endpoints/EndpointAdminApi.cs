@@ -56,6 +56,7 @@ public static class EndpointAdminApi
         CredentialProtector protector,
         IOptions<ChatGptWebOptions> web,
         TimeProvider time,
+        ActivityLog log,
         CancellationToken cancellationToken)
     {
         var now = time.GetUtcNow();
@@ -80,6 +81,8 @@ public static class EndpointAdminApi
 
         db.Endpoints.Add(endpoint);
         await db.SaveChangesAsync(cancellationToken);
+        await log.InfoAsync(ActivityCategories.Endpoint,
+            $"Endpoint creato: {endpoint.Models.Count} modelli, {endpoint.CookieCount} cookie.", endpoint.Id, subject: endpoint.Name);
         return Results.Created($"/api/endpoints/{endpoint.Id}", new EndpointCreated(EndpointView.From(endpoint), key.Key));
     }
 
@@ -91,6 +94,7 @@ public static class EndpointAdminApi
         IChatGptClient client,
         IOptions<ChatGptWebOptions> web,
         TimeProvider time,
+        ActivityLog log,
         CancellationToken cancellationToken)
     {
         if (await db.Endpoints.SingleOrDefaultAsync(e => e.Id == id, cancellationToken) is not { } endpoint)
@@ -117,11 +121,14 @@ public static class EndpointAdminApi
         }
         if (endpoint.CredentialsStamp != previousStamp || !endpoint.IsEnabled)
             await client.ReleaseAsync(endpoint.Id);
+        await log.InfoAsync(ActivityCategories.Endpoint,
+            endpoint.CredentialsStamp != previousStamp ? "Endpoint aggiornato: nuovi cookie, browser riavviato." : "Endpoint aggiornato.",
+            endpoint.Id, subject: endpoint.Name);
         return Results.Ok(EndpointView.From(endpoint));
     }
 
     private static async Task<IResult> RotateApiKeyAsync(
-        Guid id, LllmFacadeDbContext db, TimeProvider time, CancellationToken cancellationToken)
+        Guid id, LllmFacadeDbContext db, TimeProvider time, ActivityLog log, CancellationToken cancellationToken)
     {
         var key = ApiKeys.Generate();
         var now = time.GetUtcNow();
@@ -129,7 +136,11 @@ public static class EndpointAdminApi
             .SetProperty(e => e.ApiKeyHash, key.Hash)
             .SetProperty(e => e.ApiKeyPrefix, key.LookupPrefix)
             .SetProperty(e => e.UpdatedAt, now), cancellationToken);
-        return updated == 0 ? NotFound() : Results.Ok(new ApiKeyView(key.Key));
+        if (updated == 0)
+            return NotFound();
+        await log.InfoAsync(ActivityCategories.Endpoint, "Chiave API rigenerata: la precedente non vale più.", id,
+            subject: await db.Endpoints.AsNoTracking().Where(e => e.Id == id).Select(e => e.Name).SingleOrDefaultAsync(cancellationToken));
+        return Results.Ok(new ApiKeyView(key.Key));
     }
 
     private static async Task<IResult> RefreshAsync(
@@ -137,16 +148,18 @@ public static class EndpointAdminApi
     {
         if (await db.Endpoints.AsNoTracking().SingleOrDefaultAsync(e => e.Id == id, cancellationToken) is not { } endpoint)
             return NotFound();
-        await refresher.RefreshAsync(endpoint, cancellationToken);
+        await refresher.RefreshAsync(endpoint, cancellationToken, manual: true);
         return Results.Ok(EndpointView.From(await db.Endpoints.AsNoTracking().SingleAsync(e => e.Id == id, cancellationToken)));
     }
 
     private static async Task<IResult> DeleteAsync(
-        Guid id, LllmFacadeDbContext db, IChatGptClient client, CancellationToken cancellationToken)
+        Guid id, LllmFacadeDbContext db, IChatGptClient client, ActivityLog log, CancellationToken cancellationToken)
     {
+        var name = await db.Endpoints.AsNoTracking().Where(e => e.Id == id).Select(e => e.Name).SingleOrDefaultAsync(cancellationToken);
         if (await db.Endpoints.Where(e => e.Id == id).ExecuteDeleteAsync(cancellationToken) == 0)
             return NotFound();
         await client.ReleaseAsync(id);
+        await log.InfoAsync(ActivityCategories.Endpoint, "Endpoint eliminato con i suoi project.", subject: name);
         return Results.NoContent();
     }
 

@@ -102,21 +102,23 @@ public static class AdminAuth
     }
 
     private static async Task<IResult> LoginAsync(
-        LoginRequest request, LllmFacadeDbContext db, IPasswordHasher<AdminUser> hasher, HttpContext http, CancellationToken cancellationToken)
+        LoginRequest request, LllmFacadeDbContext db, IPasswordHasher<AdminUser> hasher, ActivityLog log, HttpContext http,
+        CancellationToken cancellationToken)
     {
         var userName = request.UserName?.Trim() ?? string.Empty;
         var password = request.Password ?? string.Empty;
+        var origin = http.Connection.RemoteIpAddress?.ToString() ?? "origine sconosciuta";
         var user = userName.Length == 0 ? null : await db.AdminUsers.SingleOrDefaultAsync(u => u.UserName == userName, cancellationToken);
         if (user is null)
         {
             // Same hashing cost as an existing user: response time does not reveal valid user names.
             hasher.VerifyHashedPassword(TimingDummy, TimingDummyHash.Value, password);
-            return InvalidCredentials();
+            return await InvalidCredentialsAsync();
         }
 
         var result = hasher.VerifyHashedPassword(user, user.PasswordHash, password);
         if (result == PasswordVerificationResult.Failed)
-            return InvalidCredentials();
+            return await InvalidCredentialsAsync();
 
         if (result == PasswordVerificationResult.SuccessRehashNeeded)
         {
@@ -124,10 +126,15 @@ public static class AdminAuth
             await db.SaveChangesAsync(cancellationToken);
         }
         await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CreatePrincipal(user));
+        await log.InfoAsync(ActivityCategories.Auth, $"Accesso riuscito da {origin}.", subject: user.UserName);
         return Results.Ok(new SessionView(user.UserName, user.MustChangePassword));
 
-        static IResult InvalidCredentials() =>
-            Results.Json(new ApiError("Nome utente o password non validi."), statusCode: StatusCodes.Status401Unauthorized);
+        // The typed user name is not logged: users sometimes paste the password in that field.
+        async Task<IResult> InvalidCredentialsAsync()
+        {
+            await log.WarnAsync(ActivityCategories.Auth, $"Accesso non riuscito da {origin}.");
+            return Results.Json(new ApiError("Nome utente o password non validi."), statusCode: StatusCodes.Status401Unauthorized);
+        }
     }
 
     private static async Task<IResult> ChangePasswordAsync(
@@ -136,6 +143,7 @@ public static class AdminAuth
         LllmFacadeDbContext db,
         IPasswordHasher<AdminUser> hasher,
         TimeProvider time,
+        ActivityLog log,
         HttpContext http,
         CancellationToken cancellationToken)
     {
@@ -155,6 +163,7 @@ public static class AdminAuth
         user.PasswordChangedAt = time.GetUtcNow();
         await db.SaveChangesAsync(cancellationToken);
         await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CreatePrincipal(user));
+        await log.InfoAsync(ActivityCategories.Auth, "Password cambiata: le altre sessioni sono state chiuse.", subject: user.UserName);
         return Results.Ok(new SessionView(user.UserName, user.MustChangePassword));
     }
 

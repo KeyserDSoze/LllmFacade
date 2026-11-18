@@ -83,7 +83,17 @@ public sealed class ProjectEventHub(IOptions<JsonOptions> jsonOptions)
     private const int MaxLiveText = 4000;
     private readonly JsonSerializerOptions _json = jsonOptions.Value.SerializerOptions;
     private readonly ConcurrentDictionary<Guid, ConcurrentDictionary<Guid, Channel<ProjectEvent>>> _subscribers = new();
+    private readonly ConcurrentDictionary<Guid, Channel<ProjectEvent>> _everyone = new();
     private readonly ConcurrentDictionary<Guid, string> _liveText = new();
+
+    /// <summary>One stream for all projects: browsers allow few concurrent SSE connections per origin.</summary>
+    public ProjectSubscription SubscribeAll()
+    {
+        var channel = Channel.CreateBounded<ProjectEvent>(new BoundedChannelOptions(512) { FullMode = BoundedChannelFullMode.DropOldest });
+        var id = Guid.NewGuid();
+        _everyone[id] = channel;
+        return new ProjectSubscription(channel.Reader, () => _everyone.TryRemove(id, out _));
+    }
 
     public ProjectSubscription Subscribe(Guid projectId)
     {
@@ -102,13 +112,13 @@ public sealed class ProjectEventHub(IOptions<JsonOptions> jsonOptions)
     public void AppendLiveText(Guid projectId, string delta)
     {
         _liveText.AddOrUpdate(projectId, Tail(delta), (_, current) => Tail(current + delta));
-        Publish(projectId, "live", new { text = delta, reset = false });
+        Publish(projectId, "live", new { projectId, text = delta, reset = false });
     }
 
     public void SetLiveText(Guid projectId, string text)
     {
         _liveText[projectId] = Tail(text);
-        Publish(projectId, "live", new { text = Tail(text), reset = true });
+        Publish(projectId, "live", new { projectId, text = Tail(text), reset = true });
     }
 
     public string? GetLiveText(Guid projectId) => _liveText.TryGetValue(projectId, out var text) ? text : null;
@@ -117,10 +127,14 @@ public sealed class ProjectEventHub(IOptions<JsonOptions> jsonOptions)
 
     private void Publish(Guid projectId, string type, object payload)
     {
-        if (!_subscribers.TryGetValue(projectId, out var channels) || channels.IsEmpty)
+        var hasProjectListeners = _subscribers.TryGetValue(projectId, out var channels) && !channels.IsEmpty;
+        if (!hasProjectListeners && _everyone.IsEmpty)
             return;
         var message = new ProjectEvent(type, Serialize(payload));
-        foreach (var channel in channels.Values)
+        if (hasProjectListeners)
+            foreach (var channel in channels!.Values)
+                channel.Writer.TryWrite(message);
+        foreach (var channel in _everyone.Values)
             channel.Writer.TryWrite(message);
     }
 

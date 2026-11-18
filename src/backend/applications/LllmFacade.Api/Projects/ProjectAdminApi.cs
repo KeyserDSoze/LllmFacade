@@ -27,30 +27,36 @@ public static class ProjectAdminApi
         var group = app.MapGroup("/api/projects").RequireAuthorization(AdminAuth.AdminPolicy);
         group.MapGet("/", ListTrackedAsync);
         group.MapPost("/", TrackAsync);
+        group.MapGet("/events", StreamAllEventsAsync);
         group.MapPost("/{id:guid}/activate", (Guid id, ProjectCommands commands, CancellationToken cancellationToken) =>
-            commands.UpdateAsync(id, project => project.IsActive = true, cancellationToken));
+            commands.UpdateAsync(id, project => project.IsActive = true, cancellationToken,
+                log: new LogSpec(ActivityCategories.Project, "Project attivato.", "Attivazione rifiutata")));
         group.MapPost("/{id:guid}/deactivate", (Guid id, ProjectCommands commands, CancellationToken cancellationToken) =>
-            commands.UpdateAsync(id, AutopilotRules.Deactivate, cancellationToken, closeTab: true));
+            commands.UpdateAsync(id, AutopilotRules.Deactivate, cancellationToken, closeTab: true,
+                log: new LogSpec(ActivityCategories.Project, "Project disattivato (autopilot fermato).", "Disattivazione rifiutata")));
         group.MapPut("/{id:guid}/settings", (Guid id, ProjectSettingsRequest request, ProjectCommands commands, CancellationToken cancellationToken) =>
-            commands.UpdateAsync(id, project => ApplySettings(project, request), cancellationToken));
+            commands.UpdateAsync(id, project => ApplySettings(project, request), cancellationToken,
+                log: new LogSpec(ActivityCategories.Project, "Impostazioni salvate.", "Salvataggio impostazioni rifiutato")));
         group.MapPost("/{id:guid}/autopilot/start", async (Guid id, ProjectSettingsRequest request, ProjectCommands commands, TimeProvider time, AutopilotSignal signal, CancellationToken cancellationToken) =>
         {
             var result = await commands.UpdateAsync(id, project =>
             {
                 ApplySettings(project, request);
                 AutopilotRules.Start(project, project.ContinuationPrompt, project.MaxContinuations, time.GetUtcNow());
-            }, cancellationToken);
+            }, cancellationToken, log: new LogSpec(ActivityCategories.Autopilot, "Autopilot avviato: primo controllo della chat in corso.", "Avvio rifiutato"));
             signal.Wake();
             return result;
         });
         group.MapPost("/{id:guid}/autopilot/stop", (Guid id, ProjectCommands commands, CancellationToken cancellationToken) =>
-            commands.UpdateAsync(id, AutopilotRules.Stop, cancellationToken, closeTab: true));
+            commands.UpdateAsync(id, AutopilotRules.Stop, cancellationToken, closeTab: true,
+                log: new LogSpec(ActivityCategories.Autopilot, "Autopilot fermato.", "Arresto rifiutato")));
         group.MapGet("/{id:guid}/conversations", ListConversationsAsync);
         group.MapGet("/{id:guid}/events", StreamEventsAsync);
     }
 
     private static async Task<IResult> ListChatGptProjectsAsync(
-        Guid endpointId, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, CancellationToken cancellationToken)
+        Guid endpointId, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, ActivityLog log,
+        CancellationToken cancellationToken)
     {
         if (await db.Endpoints.AsNoTracking().SingleOrDefaultAsync(e => e.Id == endpointId, cancellationToken) is not { } endpoint)
             return Results.NotFound(new ApiError("Endpoint non trovato."));
@@ -62,6 +68,8 @@ public static class ProjectAdminApi
         }
         catch (ChatGptException error)
         {
+            await log.WarnAsync(ActivityCategories.Project, "Elenco dei project da ChatGPT non riuscito: " + error.Message,
+                endpoint.Id, subject: endpoint.Name);
             return Results.Json(new ApiError(error.Message), statusCode: StatusCodes.Status502BadGateway);
         }
         finally
@@ -91,7 +99,7 @@ public static class ProjectAdminApi
     }
 
     private static async Task<IResult> TrackAsync(
-        TrackProjectRequest request, LllmFacadeDbContext db, TimeProvider time, CancellationToken cancellationToken)
+        TrackProjectRequest request, LllmFacadeDbContext db, TimeProvider time, ActivityLog log, CancellationToken cancellationToken)
     {
         if (!ChatGptIds.IsProjectId(request.ProjectId))
             return Results.BadRequest(new ApiError("ID project ChatGPT non valido."));
@@ -117,12 +125,15 @@ public static class ProjectAdminApi
         project.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
         await db.Entry(project).Reference(p => p.Endpoint).LoadAsync(cancellationToken);
+        await log.InfoAsync(ActivityCategories.Project, created ? "Project aggiunto e attivato." : "Project riattivato.",
+            project.EndpointId, project.Id, project.Name);
         var view = TrackedProjectView.From(project);
         return created ? Results.Created($"/api/projects/{project.Id}", view) : Results.Ok(view);
     }
 
     private static async Task<IResult> ListConversationsAsync(
-        Guid id, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, CancellationToken cancellationToken)
+        Guid id, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, ActivityLog log,
+        CancellationToken cancellationToken)
     {
         if (await db.Projects.AsNoTracking().Include(p => p.Endpoint).SingleOrDefaultAsync(p => p.Id == id, cancellationToken) is not { Endpoint: { } endpoint } project)
             return Results.NotFound(new ApiError("Project non trovato."));
@@ -135,6 +146,8 @@ public static class ProjectAdminApi
         }
         catch (ChatGptException error)
         {
+            await log.WarnAsync(ActivityCategories.Project, "Elenco delle chat non riuscito: " + error.Message,
+                project.EndpointId, project.Id, project.Name);
             return Results.Json(new ApiError(error.Message), statusCode: StatusCodes.Status502BadGateway);
         }
         finally
@@ -154,12 +167,31 @@ public static class ProjectAdminApi
         }
 
         using var subscription = hub.Subscribe(id);
+        await PumpAsync(http, hub, subscription, [project]);
+    }
+
+    private static async Task StreamAllEventsAsync(HttpContext http, LllmFacadeDbContext db, ProjectEventHub hub)
+    {
+        using var subscription = hub.SubscribeAll();
+        var active = await db.Projects.AsNoTracking().Include(p => p.Endpoint)
+            .Where(p => p.IsActive).OrderBy(p => p.Name).ToListAsync(http.RequestAborted);
+        await PumpAsync(http, hub, subscription, active);
+    }
+
+    private static async Task PumpAsync(
+        HttpContext http, ProjectEventHub hub, ProjectSubscription subscription, IReadOnlyList<TrackedProject> initial)
+    {
+        var cancellationToken = http.RequestAborted;
         ServerSentEvents.Prepare(http.Response);
         try
         {
-            await ServerSentEvents.WriteAsync(http.Response, "status", hub.Serialize(TrackedProjectView.From(project)), cancellationToken);
-            if (hub.GetLiveText(id) is { } liveText)
-                await ServerSentEvents.WriteAsync(http.Response, "live", hub.Serialize(new { text = liveText, reset = true }), cancellationToken);
+            foreach (var project in initial)
+            {
+                await ServerSentEvents.WriteAsync(http.Response, "status", hub.Serialize(TrackedProjectView.From(project)), cancellationToken);
+                if (hub.GetLiveText(project.Id) is { } liveText)
+                    await ServerSentEvents.WriteAsync(http.Response, "live",
+                        hub.Serialize(new { projectId = project.Id, text = liveText, reset = true }), cancellationToken);
+            }
             while (!cancellationToken.IsCancellationRequested)
             {
                 using var keepAlive = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -194,11 +226,15 @@ public static class ProjectAdminApi
     }
 }
 
-/// <summary>Shared load-modify-save flow for project commands, with status broadcast.</summary>
+/// <summary>What a project command writes to the activity log when it succeeds or is refused.</summary>
+public sealed record LogSpec(string Category, string Done, string Refused);
+
+/// <summary>Shared load-modify-save flow for project commands, with status broadcast and activity log.</summary>
 public sealed class ProjectCommands(
-    LllmFacadeDbContext db, IChatGptClient client, ProjectEventHub hub, TimeProvider time)
+    LllmFacadeDbContext db, IChatGptClient client, ProjectEventHub hub, TimeProvider time, ActivityLog activity)
 {
-    public async Task<IResult> UpdateAsync(Guid id, Action<TrackedProject> change, CancellationToken cancellationToken, bool closeTab = false)
+    public async Task<IResult> UpdateAsync(
+        Guid id, Action<TrackedProject> change, CancellationToken cancellationToken, bool closeTab = false, LogSpec? log = null)
     {
         if (await db.Projects.Include(p => p.Endpoint).SingleOrDefaultAsync(p => p.Id == id, cancellationToken) is not { } project)
             return Results.NotFound(new ApiError("Project non trovato."));
@@ -208,6 +244,8 @@ public sealed class ProjectCommands(
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException)
         {
+            if (log is not null)
+                await activity.WarnAsync(log.Category, $"{log.Refused}: {error.Message}", project.EndpointId, project.Id, project.Name);
             return Results.BadRequest(new ApiError(error.Message));
         }
 
@@ -223,6 +261,8 @@ public sealed class ProjectCommands(
         if (closeTab)
             await client.CloseTabAsync(project.EndpointId, AutopilotProcessor.TabKey(project));
         hub.PublishStatus(project);
+        if (log is not null)
+            await activity.InfoAsync(log.Category, log.Done, project.EndpointId, project.Id, project.Name);
         return Results.Ok(TrackedProjectView.From(project));
     }
 }

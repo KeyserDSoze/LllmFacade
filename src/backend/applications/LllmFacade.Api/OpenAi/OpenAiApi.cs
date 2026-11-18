@@ -34,7 +34,8 @@ public static class OpenAiApi
     }
 
     private static async Task ChatCompletionsAsync(
-        HttpContext http, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, TimeProvider time)
+        HttpContext http, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, TimeProvider time,
+        ActivityLog log)
     {
         if (await AuthenticateAsync(http, db) is not { } endpoint)
             return;
@@ -63,17 +64,37 @@ public static class OpenAiApi
         var identity = identities.CreateIdentity(endpoint);
         var id = "chatcmpl-" + Guid.NewGuid().ToString("N");
         var created = time.GetUtcNow().ToUnixTimeSeconds();
+        var trace = new RequestTrace();
+        var started = time.GetTimestamp();
         try
         {
             if (request.Stream == true)
-                await StreamAsync(http, client, identity, command, id, created, model, request.StreamOptions?.IncludeUsage == true);
+                await StreamAsync(http, client, identity, command, id, created, model, request.StreamOptions?.IncludeUsage == true, trace);
             else
-                await CompleteAsync(http, client, identity, command, id, created, model);
+                await CompleteAsync(http, client, identity, command, id, created, model, trace);
         }
         finally
         {
             await identities.PersistBrowserStateAsync(endpoint, CancellationToken.None);
+            var mode = request.Stream == true ? "streaming" : "risposta unica";
+            var seconds = time.GetElapsedTime(started).TotalSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            if (trace.Error is { } error)
+                await log.WarnAsync(ActivityCategories.OpenAi, $"Richiesta {model} ({mode}) fallita dopo {seconds} s: {error.Message}",
+                    endpoint.Id, subject: endpoint.Name);
+            else if (!http.RequestAborted.IsCancellationRequested)
+                await log.InfoAsync(ActivityCategories.OpenAi,
+                    $"Richiesta {model} ({mode}{(command.ThinkingEffort is null ? string.Empty : ", thinking " + command.ThinkingEffort)}) completata in {seconds} s, {trace.Chars} caratteri.",
+                    endpoint.Id, subject: endpoint.Name);
+            else
+                await log.WarnAsync(ActivityCategories.OpenAi, $"Richiesta {model} interrotta dal client dopo {seconds} s.",
+                    endpoint.Id, subject: endpoint.Name);
         }
+    }
+
+    private sealed class RequestTrace
+    {
+        public int Chars { get; set; }
+        public ChatGptException? Error { get; set; }
     }
 
     private static (CompletionCommand Command, string Model) BuildCommand(ChatGptEndpoint endpoint, ChatCompletionRequest request)
@@ -128,7 +149,8 @@ public static class OpenAiApi
             : throw new OpenAiRequestException("Sono supportati solo contenuti testuali.", "messages", "unsupported_content");
 
     private static async Task CompleteAsync(
-        HttpContext http, IChatGptClient client, ChatGptIdentity identity, CompletionCommand command, string id, long created, string model)
+        HttpContext http, IChatGptClient client, ChatGptIdentity identity, CompletionCommand command, string id, long created, string model,
+        RequestTrace trace)
     {
         var answer = new StringBuilder();
         try
@@ -138,11 +160,13 @@ public static class OpenAiApi
         }
         catch (ChatGptException error)
         {
+            trace.Error = error;
             await WriteUpstreamErrorAsync(http, error);
             return;
         }
 
         var text = answer.ToString();
+        trace.Chars = text.Length;
         await WriteJsonAsync(http, StatusCodes.Status200OK, new ChatCompletion(
             id, "chat.completion", created, model,
             [new CompletionChoice(0, new AssistantMessage("assistant", text), "stop")],
@@ -151,7 +175,7 @@ public static class OpenAiApi
 
     private static async Task StreamAsync(
         HttpContext http, IChatGptClient client, ChatGptIdentity identity, CompletionCommand command,
-        string id, long created, string model, bool includeUsage)
+        string id, long created, string model, bool includeUsage, RequestTrace trace)
     {
         var cancellationToken = http.RequestAborted;
         await using var chunks = client.CompleteAsync(identity, command, cancellationToken).GetAsyncEnumerator(cancellationToken);
@@ -161,6 +185,7 @@ public static class OpenAiApi
         if (await Task.WhenAny(next, Task.Delay(HeaderGrace, cancellationToken)) == next
             && next.Exception?.InnerException is ChatGptException early)
         {
+            trace.Error = early;
             await WriteUpstreamErrorAsync(http, early);
             return;
         }
@@ -188,12 +213,14 @@ public static class OpenAiApi
             }
 
             await WriteChunkAsync(new ChunkDelta(), "stop");
+            trace.Chars = answer.Length;
             if (includeUsage)
                 await WriteDataAsync(new ChatCompletionChunk(id, "chat.completion.chunk", created, model, [],
                     CompletionUsage.Estimate(command.Prompt, answer.ToString())));
         }
         catch (ChatGptException error)
         {
+            trace.Error = error;
             await WriteDataAsync(UpstreamError(error).Body);
         }
         await ServerSentEvents.WriteAsync(http.Response, null, "[DONE]", cancellationToken);
