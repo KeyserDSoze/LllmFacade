@@ -37,9 +37,9 @@ function ensureView(id) {
     }
     return { action: 'deny' };
   });
-  view.webContents.on('will-navigate', event => {
+  view.webContents.on('will-navigate', (event, navigationInfo) => {
     // Remote pages are browser content; never allow navigation to privileged schemes.
-    const url = event.url || '';
+    const url = navigationInfo?.url || event.url || '';
     if (!url.startsWith('https://') && !url.startsWith('http://')) event.preventDefault();
   });
   window.contentView.addChildView(view);
