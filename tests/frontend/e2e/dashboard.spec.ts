@@ -36,6 +36,8 @@ test('keeps chat projects when tab IDs change and offers links to closed convers
   await page.goto('/LllmFacade/');
   await page.getByPlaceholder('Nuovo progetto...').fill('Cliente Alfa');
   await page.getByRole('button', { name: 'Aggiungi progetto' }).click();
+  // New projects are selected automatically; unassigned tabs live in 'Tutte le chat'.
+  await page.locator('aside.sidebar > button.nav-item').click();
   await page.getByRole('textbox', { name: 'ID estensione Chrome' }).fill('a'.repeat(32));
   await page.getByRole('button', { name: 'Connetti', exact: true }).click();
   await expect(page.locator('.chat-card')).toHaveCount(1);
