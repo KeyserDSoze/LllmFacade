@@ -1,0 +1,14 @@
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#e8ebff;background:#090d17;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0;overflow:hidden}
+.top{height:66px;display:flex;align-items:center;justify-content:space-between;gap:24px;padding:0 20px;background:#151b2b;border-bottom:1px solid #353e55}
+.brand{display:flex;align-items:center;gap:10px}.brand strong{display:block;font-size:17px;letter-spacing:-.5px}.brand small{display:block;font-size:10px;color:#98a5c6}.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:#8372ee;font-weight:800;font-size:20px}
+.layout{display:flex;align-items:center;gap:10px;font-size:12px;color:#c1cadd}.status{font-size:11px;color:#97a1b7}
+select,button,input{font:inherit;background:#20283c;color:#e3e8f7;border:1px solid #3d4863;border-radius:7px;padding:7px 9px}button{cursor:pointer}button:hover{background:#354262}
+.grid{height:calc(100vh - 66px);display:grid;grid-template-columns:repeat(var(--columns),minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:6px;padding:6px;background:#0b0e18}
+.tile{min-width:0;min-height:0;display:flex;flex-direction:column;border:1px solid #364057;background:#101725;border-radius:7px;overflow:hidden}
+.tile-toolbar{height:39px;flex:0 0 39px;display:flex;gap:5px;align-items:center;padding:0 7px;background:#1c2537;border-bottom:1px solid #384259}
+.tile-label{flex-shrink:0;font-size:9px;font-weight:800;letter-spacing:1px;color:#b8a9ff}
+.tile-toolbar input{min-width:0;flex:1;font-size:10px;height:25px;background:#11192a;padding:3px 8px}
+.tile-toolbar button{font-size:10px;padding:4px 7px;height:25px;flex-shrink:0}
+.viewport{flex:1;min-height:0;background:#fff}
+

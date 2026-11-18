@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src 'none'" />
+<title>LllmFacade — Browser multivista</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand"><div class="mark">L</div><div><strong>LllmFacade</strong><small>Chromium multiview</small></div></div>
+  <div class="layout">
+    <span>Riquadri</span>
+    <select id="count" aria-label="Numero riquadri">
+      <option value="1">1</option><option value="4" selected>4</option>
+      <option value="6">6</option><option value="12">12</option>
+    </select>
+    <button id="all" title="Ripristina la griglia">Mostra tutti</button>
+  </div>
+  <span class="status" id="status">Pagine reali · sessione Electron condivisa</span>
+</header>
+<main id="grid" class="grid"></main>
+<script src="./app.js"></script>
+</body>
+</html>
+

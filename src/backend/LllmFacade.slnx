@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="domain/LllmFacade.Domain/LllmFacade.Domain.csproj" />
+  <Project Path="business/LllmFacade.Business/LllmFacade.Business.csproj" />
+  <Project Path="infrastructures/LllmFacade.Infrastructure.Memory/LllmFacade.Infrastructure.Memory.csproj" />
+  <Project Path="applications/LllmFacade.Api/LllmFacade.Api.csproj" />
+  <Project Path="../../tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj" />
+</Solution>
+

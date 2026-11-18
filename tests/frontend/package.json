@@ -1,0 +1,8 @@
+{
+  "name": "lllmfacade-frontend-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:unit": "vitest run" },
+  "devDependencies": { "vitest": "^3.2.4", "typescript": "~5.9.3" }
+}
+

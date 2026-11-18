@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "LllmFacade Bridge",
+  "description": "Collega LllmFacade alle tue schede ChatGPT in Chrome.",
+  "version": "0.1.0",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  "externally_connectable": {
+    "matches": [
+      "https://keyserdsoze.github.io/*",
+      "http://localhost/*",
+      "http://127.0.0.1/*"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "LllmFacade Bridge"
+  }
+}
+
