@@ -92,11 +92,15 @@ public sealed class ChatGptException(
 /// <summary>Identifiers are interpolated into ChatGPT URLs: accept only their known alphabet.</summary>
 public static partial class ChatGptIds
 {
+    public static bool IsProjectId(string? id) => id is not null && ProjectIdPattern().IsMatch(id);
+
+    public static bool IsConversationId(string? id) => id is not null && ConversationIdPattern().IsMatch(id);
+
     public static string EnsureProjectId(string? id) =>
-        id is not null && ProjectIdPattern().IsMatch(id) ? id : throw new ArgumentException("ID project ChatGPT non valido.", nameof(id));
+        IsProjectId(id) ? id! : throw new ArgumentException("ID project ChatGPT non valido.", nameof(id));
 
     public static string EnsureConversationId(string? id) =>
-        id is not null && ConversationIdPattern().IsMatch(id) ? id : throw new ArgumentException("ID chat ChatGPT non valido.", nameof(id));
+        IsConversationId(id) ? id! : throw new ArgumentException("ID chat ChatGPT non valido.", nameof(id));
 
     [GeneratedRegex("^g-p-[A-Za-z0-9_-]{1,124}$")]
     private static partial Regex ProjectIdPattern();
