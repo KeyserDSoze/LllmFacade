@@ -6,6 +6,8 @@ node --check src/extension/background.js
 node --check src/extension/security.js
 node --check src/desktop/main.cjs
 node --check src/desktop/preload.cjs
+node --check src/desktop/workspace.cjs
+node --test tests/desktop/*.test.cjs
 node --check src/desktop/renderer/app.js
 node --test tests/extension/*.test.cjs
 (cd src/frontend && npm install && npm run build)

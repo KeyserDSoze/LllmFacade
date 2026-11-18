@@ -16,7 +16,7 @@ L'estensione non è un server HTTP, non espone porte ed evita CORS tra la Pages 
 
 ## Desktop
 
-Electron ospita un controllo locale e fino a dodici WebContentsView, ciascuna una vera pagina navigabile. Tutte le view usano la stessa partizione persistente Electron: login e cookie possono essere condivisi **tra riquadri Electron**, se il provider consente l'autenticazione in quel browser. Non importiamo cookie del browser Chrome.
+Electron ospita un controllo locale e fino a dodici WebContentsView, ciascuna una vera pagina navigabile. Tutte le view usano la stessa partizione persistente Electron: login e cookie possono essere condivisi **tra riquadri Electron**, se il provider consente l'autenticazione in quel browser. Non importiamo cookie del browser Chrome. Le preferenze desktop (layout e indirizzi dei 12 riquadri) sono un file JSON versionato e validato in `app.getPath('userData')/workspace.json`, scritto atomicamente con permessi locali; non contengono cookie, prompt o risposte (ADR 0005). La sessione persistente Chromium è separata da questo file.
 
 ## Backend
 
