@@ -51,6 +51,15 @@ API locale dimostrativa su porta ASP.NET di sviluppo. Non è richiesta da Pages 
 bash script/verify.sh
 ```
 
+Test Playwright della dashboard (senza account né estensione reale; il bridge Chrome viene simulato):
+```bash
+cd tests/frontend
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+La configurazione Playwright avvia Vite sotto `/LllmFacade/` e verifica sia il caricamento sia la persistenza delle associazioni a una chat simulata. **Non** dimostra che l'automazione DOM su ChatGPT reale funzioni; serve sempre la prova manuale descritta nella sezione Estensione.
+
 In alternativa eseguire singolarmente i comandi in `AGENTS.md`.
 
 ## Deploy

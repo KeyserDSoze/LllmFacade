@@ -26,6 +26,7 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 
 - `cd src/frontend && npm install && npm run build`
 - `cd tests/frontend && npm install && npm run test:unit`
+- `cd tests/frontend && npx playwright install chromium && npm run test:e2e` (dashboard su base path Pages)
 - `node --test tests/extension/*.test.cjs`
 - `node --test tests/security/*.test.mjs` e `node script/npm-audit-report.mjs` per l'inventario npm
 - `node --check src/extension/background.js`
