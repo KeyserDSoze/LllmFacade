@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeAudit } from '../../script/npm-audit-report.mjs';
+import { summarizeAudit, securityBlockers } from '../../script/npm-audit-report.mjs';
 
 test('empty audit report has zero vulnerabilities', () => {
   assert.deepEqual(summarizeAudit({
@@ -34,4 +34,24 @@ test('fails closed on invalid audit output', () => {
   assert.throws(() => summarizeAudit({ error: { code: 'ENOAUDIT' } }), /audit failed/i);
   assert.throws(() => summarizeAudit({}), /invalid npm audit/i);
   assert.throws(() => summarizeAudit(null), /invalid npm audit/i);
+});
+
+test('security gate blocks production high severity and Electron devDependency vulnerabilities', () => {
+  const empty = { findings: [] };
+  const high = { findings: [{ package: 'x', severity: 'high' }] };
+  const critical = { findings: [{ package: 'electron', severity: 'critical' }] };
+  const input = {
+    'src/frontend': { all: high, production: empty },
+    'tests/frontend': { all: high, production: empty },
+    'src/desktop': { all: critical, production: empty }
+  };
+  assert.deepEqual(securityBlockers(input), [{
+    workspace: 'src/desktop', scope: 'all', package: 'electron', severity: 'critical'
+  }]);
+  input['src/frontend'].production = high;
+  assert.equal(securityBlockers(input).length, 2);
+});
+
+test('security gate refuses missing or malformed workspace audit data', () => {
+  assert.throws(() => securityBlockers({}), /missing/i);
 });
