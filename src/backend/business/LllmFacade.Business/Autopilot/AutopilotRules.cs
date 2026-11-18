@@ -1,0 +1,124 @@
+using LllmFacade.Business.ChatGpt;
+using LllmFacade.Domain;
+
+namespace LllmFacade.Business.Autopilot;
+
+public sealed record AutopilotSettings(TimeSpan PollInterval, TimeSpan RetryInterval, TimeSpan SubmissionGrace);
+
+public enum AutopilotAction
+{
+    Wait,
+    Submit,
+    Complete
+}
+
+/// <summary>"Carry on the work": send the saved prompt each time the chat finishes, never twice for the same answer.</summary>
+public static class AutopilotRules
+{
+    public const int MaxPromptLength = 20_000;
+    public const int MaxErrorLength = 500;
+
+    public static string NormalizePrompt(string? prompt)
+    {
+        var normalized = prompt?.Trim();
+        if (string.IsNullOrEmpty(normalized))
+            throw new ArgumentException("Il prompt di continuazione è obbligatorio.", nameof(prompt));
+        if (normalized.Length > MaxPromptLength)
+            throw new ArgumentException($"Il prompt di continuazione supera {MaxPromptLength} caratteri.", nameof(prompt));
+        return normalized;
+    }
+
+    public static void Start(TrackedProject project, string? prompt, int? maxContinuations, DateTimeOffset now)
+    {
+        if (!project.IsActive)
+            throw new InvalidOperationException("Attivare il project prima di portare avanti il lavoro.");
+        var normalized = NormalizePrompt(prompt);
+        if (maxContinuations is < 1 or > 10_000)
+            throw new ArgumentException("Il numero massimo di continuazioni deve essere tra 1 e 10000.", nameof(maxContinuations));
+
+        project.ContinuationPrompt = normalized;
+        project.MaxContinuations = maxContinuations;
+        project.ContinuationsSent = 0;
+        project.AutopilotEnabled = true;
+        project.Status = AutopilotStatus.Monitoring;
+        project.NextCheckAt = now;
+        project.ConsecutiveFailures = 0;
+        project.LastError = null;
+        project.PendingAfterNodeId = null;
+    }
+
+    public static AutopilotAction Observe(
+        TrackedProject project, ConversationState state, DateTimeOffset now, AutopilotSettings settings)
+    {
+        project.LastCheckAt = now;
+        project.CurrentConversationId = state.ConversationId;
+        project.ConsecutiveFailures = 0;
+        project.LastError = null;
+        if (project.PendingAfterNodeId is not null && project.PendingAfterNodeId != state.CurrentNodeId)
+            project.PendingAfterNodeId = null;
+
+        if (state.Phase == ConversationPhase.Generating)
+        {
+            project.Status = AutopilotStatus.Generating;
+            project.NextCheckAt = now + settings.PollInterval;
+            return AutopilotAction.Wait;
+        }
+
+        if (project.PendingAfterNodeId is not null)
+        {
+            if (project.LastContinuationAt is { } sentAt && now - sentAt < settings.SubmissionGrace)
+            {
+                project.Status = AutopilotStatus.Submitting;
+                project.NextCheckAt = now + settings.PollInterval;
+                return AutopilotAction.Wait;
+            }
+            project.PendingAfterNodeId = null;
+        }
+
+        if (project.MaxContinuations is { } max && project.ContinuationsSent >= max)
+        {
+            project.AutopilotEnabled = false;
+            project.Status = AutopilotStatus.Completed;
+            project.NextCheckAt = null;
+            return AutopilotAction.Complete;
+        }
+
+        project.Status = AutopilotStatus.Submitting;
+        return AutopilotAction.Submit;
+    }
+
+    public static void SubmissionSent(
+        TrackedProject project, string? afterNodeId, bool confirmed, DateTimeOffset now, AutopilotSettings settings)
+    {
+        project.ContinuationsSent++;
+        project.LastContinuationAt = now;
+        project.PendingAfterNodeId = afterNodeId;
+        project.ConsecutiveFailures = 0;
+        project.Status = confirmed ? AutopilotStatus.Generating : AutopilotStatus.Submitting;
+        project.LastError = confirmed ? null : "Invio non confermato: controllo la chat prima di riprovare.";
+        project.NextCheckAt = now + settings.PollInterval;
+    }
+
+    public static void Failed(TrackedProject project, string error, DateTimeOffset now, AutopilotSettings settings)
+    {
+        project.LastCheckAt = now;
+        project.ConsecutiveFailures++;
+        project.LastError = error.Length > MaxErrorLength ? error[..MaxErrorLength] : error;
+        project.Status = AutopilotStatus.WaitingRetry;
+        project.NextCheckAt = now + settings.RetryInterval;
+    }
+
+    public static void Stop(TrackedProject project)
+    {
+        project.AutopilotEnabled = false;
+        project.Status = AutopilotStatus.Stopped;
+        project.NextCheckAt = null;
+    }
+
+    public static void Deactivate(TrackedProject project)
+    {
+        if (project.AutopilotEnabled)
+            Stop(project);
+        project.IsActive = false;
+    }
+}
