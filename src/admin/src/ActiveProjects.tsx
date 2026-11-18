@@ -116,15 +116,17 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
   const [prompt, setPrompt] = useState(project.continuationPrompt);
   const [target, setTarget] = useState(project.targetConversationId ?? '');
   const [max, setMax] = useState(project.maxContinuations?.toString() ?? '');
+  const [newChat, setNewChat] = useState(project.newChatPrompt);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
-  const form = { prompt, target, max };
+  const form = { prompt, target, max, newChat };
   const dirty = isDirty(project, form);
 
   const settings = (): ProjectSettings => ({
     continuationPrompt: prompt,
     targetConversationId: target || null,
-    maxContinuations: max.trim() ? Number(max) : null
+    maxContinuations: max.trim() ? Number(max) : null,
+    newChatPrompt: newChat
   });
 
   const run = async (label: string, action: () => Promise<TrackedProject>, success: (next: TrackedProject) => string, validate?: string | null) => {
@@ -165,6 +167,7 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
         <div id={bodyId} className="tile-body">
           <dl className="facts">
             <dt>Prompt inviati</dt><dd>{project.continuationsSent}{project.maxContinuations ? ` / ${project.maxContinuations}` : ''}</dd>
+            <dt>Nuove chat create</dt><dd>{project.chatsCreated}</dd>
             <dt>Ultimo controllo</dt><dd>{formatDateTime(project.lastCheckAt)}</dd>
             <dt>Prossimo controllo</dt><dd>{project.autopilotEnabled ? formatDateTime(project.nextCheckAt) : '—'}</dd>
             <dt>Ultimo invio</dt><dd>{formatDateTime(project.lastContinuationAt)}</dd>
@@ -180,6 +183,10 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
           </label>
           <label>Numero massimo di invii (vuoto = senza limite)
             <input type="number" min={1} value={max} onChange={e => setMax(e.target.value)} />
+          </label>
+          <label>Primo messaggio della nuova chat (se la chat raggiunge il limite di lunghezza)
+            <textarea rows={2} value={newChat} onChange={e => setNewChat(e.target.value)}
+              placeholder="Vuoto = spiegazione automatica + ultimo messaggio + prompt di continuazione." />
           </label>
           <div className="actions">
             {project.autopilotEnabled

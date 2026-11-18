@@ -10,7 +10,7 @@ const endpoint: Endpoint = {
   thinkingEfforts: { high: 'extended' }, useTemporaryChat: false, userAgent: 'UA', locale: 'it-IT', timeZone: 'Europe/Rome',
   extraHeaders: { 'Accept-Language': 'it-IT' }, apiKeyPrefix: 'lf_12345678', hasAccessToken: true,
   accessTokenExpiresAt: null, cookieCount: 4, accountEmail: null, refreshIntervalMinutes: 15, lastRefreshAt: null,
-  lastRefreshAttemptAt: null, lastError: null, lastErrorAt: null, isEnabled: true, createdAt: '2026-11-18T10:00:00Z',
+  lastRefreshAttemptAt: null, lastError: null, lastErrorAt: null, nextRefreshAt: null, isEnabled: true, createdAt: '2026-11-18T10:00:00Z',
   updatedAt: '2026-11-18T10:00:00Z'
 };
 

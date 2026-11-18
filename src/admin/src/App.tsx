@@ -5,6 +5,7 @@ import { ChangePasswordView, LoginView } from './AuthViews';
 import { EndpointsView } from './EndpointsView';
 import { LogsView } from './LogsView';
 import { AllProjectsView, InactiveProjectsView } from './ProjectsViews';
+import { StatusDock } from './StatusDock';
 
 const routes = [
   { hash: '#/endpoint', label: 'Endpoint OpenAI' },
@@ -66,6 +67,7 @@ export default function App() {
               : hash === '#/log' ? <LogsView />
                 : <EndpointsView />}
       </main>
+      <StatusDock />
     </div>
   );
 }

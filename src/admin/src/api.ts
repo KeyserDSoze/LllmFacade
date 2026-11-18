@@ -20,6 +20,7 @@ export type Endpoint = {
   lastRefreshAttemptAt: string | null;
   lastError: string | null;
   lastErrorAt: string | null;
+  nextRefreshAt: string | null;
   isEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -65,12 +66,41 @@ export type TrackedProject = {
   lastContinuationAt: string | null;
   consecutiveFailures: number;
   lastError: string | null;
+  newChatPrompt: string;
+  chatsCreated: number;
   updatedAt: string;
 };
 
 export type Conversation = { id: string; title: string; createdAt: string | null; updatedAt: string | null };
 
-export type ProjectSettings = { continuationPrompt: string; targetConversationId: string | null; maxContinuations: number | null };
+export type ProjectSettings = {
+  continuationPrompt: string;
+  targetConversationId: string | null;
+  maxContinuations: number | null;
+  newChatPrompt: string;
+};
+
+export type WorkingItem = {
+  kind: 'project' | 'api';
+  id: string | null;
+  name: string;
+  endpointName: string;
+  detail: string;
+  since: string | null;
+};
+
+export type EndpointToken = {
+  id: string;
+  name: string;
+  isEnabled: boolean;
+  hasAccessToken: boolean;
+  accessTokenExpiresAt: string | null;
+  lastRefreshAt: string | null;
+  nextRefreshAt: string | null;
+  lastError: string | null;
+};
+
+export type ActivitySummary = { working: WorkingItem[]; watching: number; endpoints: EndpointToken[]; serverTime: string };
 
 export type LogLevel = 'Info' | 'Warning' | 'Error';
 
@@ -157,6 +187,7 @@ export const api = {
   stopAutopilot: (projectId: string) => request<TrackedProject>('POST', `/api/projects/${id(projectId)}/autopilot/stop`),
   conversations: (projectId: string) => request<Conversation[]>('GET', `/api/projects/${id(projectId)}/conversations`),
   eventsUrl: '/api/projects/events',
+  summary: () => request<ActivitySummary>('GET', '/api/activity/summary'),
   logs: (query: LogQuery = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value));

@@ -25,6 +25,7 @@ export class FakeBackend {
   tracked: Tracked[] = [];
   requests: Recorded[] = [];
   logs: FakeLog[] = [];
+  apiRequests: Array<{ name: string; detail: string; since: string }> = [];
   liveText: Record<string, string> = {};
   settingsError: string | null = null;
   chatGptProjects = [{ projectId: 'g-p-alpha', name: 'Alpha' }, { projectId: 'g-p-beta', name: 'Beta' }];
@@ -51,7 +52,8 @@ export class FakeBackend {
       id: `t-${projectId}`, endpointId: 'e-1', endpointName: 'Account principale', projectId, name, isActive: true,
       continuationPrompt: '', targetConversationId: null, autopilotEnabled: false, maxContinuations: null,
       continuationsSent: 0, status: 'Idle', currentConversationId: null, lastCheckAt: null, nextCheckAt: null,
-      lastContinuationAt: null, consecutiveFailures: 0, lastError: null, updatedAt: '2026-11-18T10:00:00Z'
+      lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '', chatsCreated: 0,
+      updatedAt: '2026-11-18T10:00:00Z'
     };
     this.tracked.push(project);
     return project;
@@ -77,7 +79,7 @@ export class FakeBackend {
       apiKeyPrefix: ISSUED_KEY.slice(0, 11), hasAccessToken: Boolean(body.accessToken),
       accessTokenExpiresAt: null, cookieCount: cookies.split(';').filter(part => part.includes('=')).length,
       accountEmail: null, refreshIntervalMinutes: 30, lastRefreshAt: null, lastRefreshAttemptAt: null, lastError: null,
-      lastErrorAt: null, isEnabled: true, createdAt: '2026-11-18T10:00:00Z', updatedAt: '2026-11-18T10:00:00Z'
+      lastErrorAt: null, nextRefreshAt: null, isEnabled: true, createdAt: '2026-11-18T10:00:00Z', updatedAt: '2026-11-18T10:00:00Z'
     };
   }
 
@@ -148,6 +150,26 @@ export class FakeBackend {
         && (!category || entry.category === category) && (!projectFilter || entry.projectId === projectFilter) && entry.id < before);
       return json(200, { items: rows.slice(0, take), hasMore: rows.length > take });
     }
+    if (path === '/api/activity/summary') {
+      const autopilot = this.tracked.filter(item => item.isActive && item.autopilotEnabled);
+      const working = [
+        ...autopilot.filter(item => item.status === 'Generating' || item.status === 'Submitting').map(item => ({
+          kind: 'project', id: item.id, name: item.name, endpointName: String(item.endpointName),
+          detail: item.status === 'Generating' ? 'ChatGPT sta scrivendo' : 'Invio del prompt in corso', since: new Date(Date.now() - 90_000).toISOString()
+        })),
+        ...this.apiRequests.map(request => ({ kind: 'api', id: null, name: request.name, endpointName: request.name, detail: request.detail, since: request.since }))
+      ];
+      return json(200, {
+        working,
+        watching: autopilot.filter(item => item.status === 'Monitoring' || item.status === 'WaitingRetry').length,
+        endpoints: this.endpoints.map(endpoint => ({
+          id: endpoint.id, name: endpoint.name, isEnabled: endpoint.isEnabled, hasAccessToken: endpoint.hasAccessToken,
+          accessTokenExpiresAt: endpoint.accessTokenExpiresAt, lastRefreshAt: endpoint.lastRefreshAt, nextRefreshAt: endpoint.nextRefreshAt,
+          lastError: endpoint.lastError
+        })),
+        serverTime: new Date().toISOString()
+      });
+    }
     if (path === '/api/projects/events') {
       // Simulates the worker: a started autopilot is generating and streams text.
       const events: string[] = ['retry: 1000\n\n'];
@@ -188,7 +210,8 @@ export class FakeBackend {
           return json(400, { error: 'Il prompt di continuazione è obbligatorio.' });
         }
         Object.assign(project, {
-          continuationPrompt: prompt, targetConversationId: body.targetConversationId ?? null, maxContinuations: body.maxContinuations ?? null
+          continuationPrompt: prompt, targetConversationId: body.targetConversationId ?? null, maxContinuations: body.maxContinuations ?? null,
+          newChatPrompt: String(body.newChatPrompt ?? '').trim()
         });
         if (starting) Object.assign(project, { autopilotEnabled: true, status: 'Monitoring' });
         this.addLog('Info', starting ? 'autopilot' : 'project', starting ? 'Autopilot avviato: primo controllo della chat in corso.' : 'Impostazioni salvate.', project);

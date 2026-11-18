@@ -1,5 +1,5 @@
 import type {
-  AutopilotStatus, Conversation, Endpoint, EndpointInput, LogEntry, LogLevel, ModelMapping, TrackedProject
+  ActivitySummary, AutopilotStatus, Conversation, Endpoint, EndpointInput, LogEntry, LogLevel, ModelMapping, TrackedProject
 } from './api';
 
 export const reasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
@@ -276,12 +276,44 @@ export function validateStart(prompt: string, max: string): string | null {
   return null;
 }
 
-export type ProjectForm = { prompt: string; target: string; max: string };
+export type ProjectForm = { prompt: string; target: string; max: string; newChat: string };
 
 export function isDirty(project: TrackedProject, form: ProjectForm): boolean {
   return form.prompt.trim() !== project.continuationPrompt
     || form.target !== (project.targetConversationId ?? '')
-    || form.max.trim() !== (project.maxContinuations?.toString() ?? '');
+    || form.max.trim() !== (project.maxContinuations?.toString() ?? '')
+    || form.newChat.trim() !== project.newChatPrompt;
+}
+
+export function relativeTime(value: string | null, now: Date): string {
+  if (!value) return 'mai';
+  const seconds = Math.round((Date.parse(value) - now.getTime()) / 1000);
+  if (Math.abs(seconds) < 45) return 'adesso';
+  const minutes = Math.round(Math.abs(seconds) / 60);
+  const [amount, unit] = minutes < 60 ? [minutes, 'min']
+    : minutes < 60 * 48 ? [Math.round(minutes / 60), 'ore']
+      : [Math.round(minutes / 1440), 'giorni'];
+  return seconds > 0 ? `tra ${amount} ${unit}` : `${amount} ${unit} fa`;
+}
+
+export function elapsedLabel(since: string | null, now: Date): string {
+  if (!since) return '';
+  const seconds = Math.max(0, Math.round((now.getTime() - Date.parse(since)) / 1000));
+  if (seconds < 60) return `da ${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `da ${minutes} min`;
+  const rest = minutes % 60;
+  return `da ${Math.floor(minutes / 60)} h${rest ? ` ${rest} min` : ''}`;
+}
+
+export function workingCount(summary: ActivitySummary | null): number {
+  return summary?.working.length ?? 0;
+}
+
+export function dockHeadline(summary: ActivitySummary | null): string {
+  if (!summary) return 'Stato in caricamento…';
+  const count = workingCount(summary);
+  return count === 0 ? 'Nessun thread al lavoro' : `${count} thread al lavoro`;
 }
 
 export function mergeLogs(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {

@@ -13,6 +13,8 @@ Issue: #12. Backend ASP.NET Core (.NET 10) in Docker con PostgreSQL e Chromium h
 - Viste: tutti i project (da ChatGPT) con attivazione, attivi, disattivati con riattivazione.
 - Project attivi: chat in ordine cronologico, "Porta avanti il lavoro" con prompt salvato, controllo della chat, invio del prompt a risposta terminata, retry ogni minuto se la connessione cade, stato live via SSE.
 - Test xUnit (regole, API con PostgreSQL via Testcontainers, browser contro ChatGPT simulato) e Vitest/Playwright per l'admin.
+- Quando una chat raggiunge il limite di lunghezza di ChatGPT l'autopilot crea una nuova chat nello stesso project, invia il primo messaggio configurabile e prosegue lì, senza duplicare chat o prompt.
+- Pannello fisso in basso a destra con i thread al lavoro (project e richieste API) e, per endpoint, ultimo e prossimo rinnovo del token.
 - Registro attività persistente e consultabile (filtri, aggiornamento live, retention) senza segreti né testo di prompt/risposte.
 - Project attivi a mosaico (1/2/4 per riga), accordion per project, pallino di stato e ultimo testo ricevuto, un solo stream SSE per tutti i tile, feedback esplicito su salvataggio, avvio e arresto.
 

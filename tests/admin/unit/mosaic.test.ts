@@ -8,7 +8,7 @@ const project: TrackedProject = {
   id: 'p1', endpointId: 'e1', endpointName: 'Account', projectId: 'g-p-a', name: 'Alpha', isActive: true,
   continuationPrompt: 'Continua', targetConversationId: null, autopilotEnabled: true, maxContinuations: null,
   continuationsSent: 0, status: 'Monitoring', currentConversationId: null, lastCheckAt: null, nextCheckAt: null,
-  lastContinuationAt: null, consecutiveFailures: 0, lastError: null, updatedAt: '2026-11-18T10:00:00Z'
+  lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '', chatsCreated: 0, updatedAt: '2026-11-18T10:00:00Z'
 };
 
 describe('status dot', () => {
@@ -85,11 +85,13 @@ describe('start validation and dirty state', () => {
   });
 
   it('detects unsaved changes', () => {
-    expect(isDirty(project, { prompt: 'Continua', target: '', max: '' })).toBe(false);
-    expect(isDirty(project, { prompt: 'Altro', target: '', max: '' })).toBe(true);
-    expect(isDirty(project, { prompt: 'Continua', target: 'c-1', max: '' })).toBe(true);
-    expect(isDirty({ ...project, maxContinuations: 3 }, { prompt: 'Continua', target: '', max: '3' })).toBe(false);
-    expect(isDirty(project, { prompt: 'Continua', target: '', max: '7' })).toBe(true);
+    expect(isDirty(project, { prompt: 'Continua', target: '', max: '', newChat: '' })).toBe(false);
+    expect(isDirty(project, { prompt: 'Altro', target: '', max: '', newChat: '' })).toBe(true);
+    expect(isDirty(project, { prompt: 'Continua', target: 'c-1', max: '', newChat: '' })).toBe(true);
+    expect(isDirty({ ...project, maxContinuations: 3 }, { prompt: 'Continua', target: '', max: '3', newChat: '' })).toBe(false);
+    expect(isDirty(project, { prompt: 'Continua', target: '', max: '7', newChat: '' })).toBe(true);
+    expect(isDirty(project, { prompt: 'Continua', target: '', max: '', newChat: 'Riparti da qui' })).toBe(true);
+    expect(isDirty({ ...project, newChatPrompt: 'Riparti da qui' }, { prompt: 'Continua', target: '', max: '', newChat: ' Riparti da qui ' })).toBe(false);
   });
 });
 

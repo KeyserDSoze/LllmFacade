@@ -112,7 +112,9 @@ test('carries on the work with the saved prompt and follows the live progress', 
   await expect(card.getByRole('region', { name: 'Avanzamento' })).toContainText('Sto scrivendo il capitolo 3');
   await expect(card.getByRole('region', { name: 'Attività recente' })).toContainText('Autopilot avviato');
   const start = backend.requests.filter(request => request.path.endsWith('/autopilot/start')).at(-1)!;
-  expect(start.body).toEqual({ continuationPrompt: 'Continua dal punto in cui ti sei fermato.', targetConversationId: 'c-1', maxContinuations: 5 });
+  expect(start.body).toEqual({
+    continuationPrompt: 'Continua dal punto in cui ti sei fermato.', targetConversationId: 'c-1', maxContinuations: 5, newChatPrompt: ''
+  });
 
   await card.getByRole('button', { name: 'Ferma' }).click();
   await expect(card.getByText(/Autopilot fermato alle/)).toBeVisible();
@@ -233,6 +235,79 @@ test('lists the activity log with filters and live refresh', async ({ page }) =>
 
   backend.addLog('Info', 'autopilot', 'Connessione ripristinata dopo 1 tentativi falliti.', alpha);
   await expect(table).toContainText('Connessione ripristinata', { timeout: 8000 });
+});
+
+test('shows in a fixed panel which threads are working and when the token is renewed', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  Object.assign(alpha, { autopilotEnabled: true, status: 'Generating' });
+  const beta = backend.track('g-p-beta', 'Beta');
+  Object.assign(beta, { autopilotEnabled: true, status: 'Monitoring' });
+  backend.apiRequests.push({
+    name: 'Account principale', detail: 'Richiesta API chatgpt-thinking (streaming)', since: new Date(Date.now() - 20_000).toISOString()
+  });
+  const minutes = (value: number) => new Date(Date.now() + value * 60_000).toISOString();
+  Object.assign(backend.endpoints[0], {
+    hasAccessToken: true, lastRefreshAt: minutes(-12), nextRefreshAt: minutes(18), accessTokenExpiresAt: minutes(60 * 24 * 2)
+  });
+  await backend.install(page);
+
+  await page.goto('/#/endpoint');
+  const dock = page.getByRole('complementary', { name: 'Stato in tempo reale' });
+  await expect(dock.getByTestId('dock-headline')).toHaveText('2 thread al lavoro');
+
+  const threads = dock.getByRole('region', { name: 'Thread al lavoro' });
+  await expect(threads).toContainText('Alpha');
+  await expect(threads).toContainText('ChatGPT sta scrivendo');
+  await expect(threads).toContainText('Richiesta API chatgpt-thinking (streaming)');
+  await expect(threads).not.toContainText('Beta');
+  await expect(threads).toContainText('1 project con autopilot in attesa del prossimo controllo');
+
+  const tokens = dock.getByRole('region', { name: 'Token ChatGPT' });
+  await expect(tokens).toContainText('Account principale');
+  await expect(tokens).toContainText(/Rinnovato \d{2}:\d{2} \(12 min fa\)/);
+  await expect(tokens).toContainText(/Prossimo rinnovo \d{2}:\d{2} \(tra 18 min\)/);
+  await expect(tokens).toContainText(/Token scade tra \d+ (ore|giorni)/);
+
+  await dock.getByRole('button').click();
+  await expect(dock.getByRole('button')).toHaveAttribute('aria-expanded', 'false');
+  await expect(tokens).toHaveCount(0);
+  await page.reload();
+  await expect(dock.getByTestId('dock-headline')).toHaveText('2 thread al lavoro');
+  await expect(dock.getByRole('region', { name: 'Token ChatGPT' })).toHaveCount(0);
+});
+
+test('highlights a failed token renewal in the panel', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  Object.assign(backend.endpoints[0], { lastError: 'Sessione scaduta: reinserire i cookie.', nextRefreshAt: new Date(Date.now() + 300_000).toISOString() });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+
+  const dock = page.getByRole('complementary', { name: 'Stato in tempo reale' });
+  await expect(dock.getByTestId('dock-headline')).toHaveText('Nessun thread al lavoro');
+  await expect(dock.getByRole('region', { name: 'Token ChatGPT' })).toContainText('Sessione scaduta: reinserire i cookie.');
+});
+
+test('lets you choose the first message of the new chat opened when the length limit is reached', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  alpha.chatsCreated = 2;
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const card = page.getByRole('article', { name: 'Project Alpha' });
+  await expect(card.getByText('Nuove chat create')).toBeVisible();
+  await expect(card.locator('dt', { hasText: 'Nuove chat create' }).locator('+ dd')).toHaveText('2');
+
+  await card.getByLabel(/Primo messaggio della nuova chat/).fill('Riparti dal capitolo 4.');
+  await expect(card.getByText('Modifiche non ancora salvate.')).toBeVisible();
+  await card.getByRole('button', { name: 'Salva impostazioni' }).click();
+
+  await expect(card.getByText(/Impostazioni salvate alle/)).toBeVisible();
+  const saved = backend.requests.filter(request => request.path.endsWith('/settings')).at(-1)!;
+  expect(saved.body).toMatchObject({ newChatPrompt: 'Riparti dal capitolo 4.' });
+  expect(backend.tracked[0].newChatPrompt).toBe('Riparti dal capitolo 4.');
 });
 
 test('returns to the login when the session expires', async ({ page }) => {

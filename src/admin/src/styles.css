@@ -129,3 +129,16 @@ td small { display: block; }
 .log-table td { vertical-align: top; }
 .log-table tr.level-Error td { background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .log-table tr.level-Warning td { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+
+/* dock */
+.dock { position: fixed; right: 1rem; bottom: 1rem; width: min(340px, calc(100vw - 2rem)); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .25); z-index: 50; }
+.dock-head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: .5rem; width: 100%; padding: .6rem .8rem; cursor: pointer; }
+.dock-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
+.dock-title { flex: 1; font-weight: 600; }
+.dock-body { max-height: min(60vh, 460px); overflow: auto; padding: 0 .8rem .8rem; display: grid; gap: .6rem; border-top: 1px solid var(--border); }
+.dock-body h3 { margin: .6rem 0 .3rem; }
+.dock-list { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .5rem; font-size: .85rem; }
+.dock-list li { display: flex; gap: .55rem; align-items: flex-start; }
+.dock-list .dot { margin-top: .25rem; }
+.block { display: block; }
+.has-error strong { color: var(--danger); }
