@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: lllmfacade
+      POSTGRES_USER: lllmfacade
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Impostare POSTGRES_PASSWORD nel file .env (vedi .env.example)}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lllmfacade -d lllmfacade"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: lllmfacade-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Database=lllmfacade;Username=lllmfacade;Password=${POSTGRES_PASSWORD}
+      Admin__RequireHttpsCookie: ${LLLMFACADE_HTTPS_COOKIE:-false}
+    ports:
+      # Local only by default: publish through an HTTPS reverse proxy before exposing it.
+      - "127.0.0.1:${LLLMFACADE_PORT:-8080}:8080"
+    volumes:
+      - api-keys:/data/keys
+    # Chromium needs more shared memory than the Docker default (64 MB).
+    shm_size: 1gb
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  api-keys:

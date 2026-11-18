@@ -40,6 +40,20 @@ jobs:
           node --check src/desktop/renderer/app.js
       - name: Desktop workspace unit tests
         run: node --test tests/desktop/*.test.cjs
+      - name: Build admin SPA
+        working-directory: src/admin
+        run: npm install && npm run build
+      - name: Admin unit tests
+        working-directory: tests/admin
+        run: npm install && npm run test:unit
+      - name: Install Playwright Chromium for admin E2E
+        working-directory: tests/admin
+        run: npx playwright install --with-deps chromium
+      - name: Admin browser E2E
+        working-directory: tests/admin
+        env:
+          CI: 'true'
+        run: npm run test:e2e
   backend:
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +63,16 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Backend build
         run: dotnet build src/backend/LllmFacade.slnx -c Release
-      - name: Backend tests
-        run: dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj -c Release
+      - name: Business tests
+        run: dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj -c Release --no-build
+      - name: Browser tests (headless Chromium against a simulated ChatGPT)
+        run: dotnet run --project tests/backend/LllmFacade.Browser.Tests/LllmFacade.Browser.Tests.csproj -c Release --no-build
+      - name: API tests (PostgreSQL via Testcontainers)
+        run: dotnet run --project tests/backend/LllmFacade.Api.Tests/LllmFacade.Api.Tests.csproj -c Release --no-build
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -t lllmfacade-api .
 

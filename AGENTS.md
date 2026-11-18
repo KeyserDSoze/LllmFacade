@@ -7,7 +7,8 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 - `src/frontend`: React + TypeScript + Vite, distribuibile staticamente su GitHub Pages.
 - `src/extension`: Chrome MV3. Permessi minimi, nessuna credenziale, origin esplicitamente consentiti.
 - `src/desktop`: Electron con WebContentsView per rendering di vere pagine web, non iframe.
-- `src/backend/applications`, `business`, `domain`, `infrastructures`: API sottile, regole pure, entità, adapter.
+- `src/backend/applications`, `business`, `domain`, `infrastructures`: API, regole pure, entità, adapter (`Postgres`, `Browser`).
+- `src/admin`: SPA amministrativa React servita dall'API (non va su Pages).
 - `tests/frontend`, `tests/extension`, `tests/backend`: test separati.
 - `ADR`, `docs`, `features`: decisioni, runbook, acceptance test.
 
@@ -21,6 +22,7 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 6. Electron: `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`, preload ristretto; mai esporre Node a pagine remote.
 7. Nuove feature: test di logica e aggiornamento `docs/`, `features/` o ADR quando cambia l'architettura.
 8. Non dichiarare test o login verificati se non sono stati effettivamente eseguiti.
+9. Backend F07: cookie, token e chiavi API non vanno mai in log, risposte o repository; nessuna tecnica anti-bot/stealth; le risposte ChatGPT restano in memoria. Percorsi e selettori di ChatGPT sono configurabili, non sparsi nel codice.
 
 ## Verifica
 
@@ -32,6 +34,9 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 - `node --check src/extension/background.js`
 - `node --check src/desktop/main.cjs` e `node --test tests/desktop/*.test.cjs`
 - `dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj` (SDK 10)
+- `dotnet run --project tests/backend/LllmFacade.Browser.Tests/LllmFacade.Browser.Tests.csproj` (scarica Chromium)
+- `dotnet run --project tests/backend/LllmFacade.Api.Tests/LllmFacade.Api.Tests.csproj` (richiede Docker per PostgreSQL)
+- `cd src/admin && npm install && npm run build`; `cd tests/admin && npm install && npm run test:unit && npx playwright install chromium && npm run test:e2e`
 
 ## Workflow di sviluppo e GitHub Issues
 

@@ -7,7 +7,7 @@ Workspace multi-interfaccia per organizzare progetti e conversazioni AI. Monorep
 - **Web / GitHub Pages**: dashboard React con progetti locali, elenco delle schede ChatGPT e un collegamento diretto con l'estensione Chrome.
 - **Estensione Chrome (Manifest V3)**: apre, elenca e attiva le schede; in modo sperimentale, da comando esplicito dell'utente, può inviare un prompt e mostrare l'ultima risposta della scheda selezionata. Il DOM di ChatGPT può cambiare e interrompere la funzionalità.
 - **Desktop**: shell Electron/Chromium con fino a 12 pagine reali affiancate, sessione di browser condivisa tra riquadri e salvataggio locale del layout e degli URL per riprendere il lavoro al riavvio.
-- **Backend**: ASP.NET Core con i layer Applications, Business, Domain, Infrastructures; opzionale per la POC e non richiesto da GitHub Pages.
+- **Backend (F07)**: ASP.NET Core .NET 10 in Docker con PostgreSQL e Chromium headless. Espone API OpenAI compatibili (`/v1/chat/completions`, SSE e `reasoning_effort`) che usano una sessione ChatGPT configurata dall'admin (cookie, token, user agent, header), rinnova token e cookie in background e può "portare avanti il lavoro" dei project con un prompt salvato. Interfaccia in `src/admin`; guida in `docs/backend-chatgpt.md`. Avvio: `cp .env.example .env && docker compose up --build`.
 
 Non usiamo OpenAI API né copiamo credenziali/sessioni da Chrome. Le risposte lette dall'estensione sono mostrate temporaneamente e **non salvate** dalla dashboard. L'automazione della UI di servizi terzi va valutata rispetto ai rispettivi termini d'uso; nessuna integrazione DOM è garantita o ufficiale.
 

@@ -20,7 +20,7 @@ Electron ospita un controllo locale e fino a dodici WebContentsView, ciascuna un
 
 ## Backend
 
-Un ASP.NET Core opzionale separa Applications (API), Business (regole pure), Domain (modelli) e Infrastructures (adapter). La prima API è un esempio locale, senza autenticazione e quindi **non da pubblicare**. Nessun dato della Pages viene automaticamente sincronizzato con l'API. L'integrazione futura richiederà identità, autorizzazioni, persistenza e migrazioni.
+ASP.NET Core separa Applications (API, worker, SPA admin statica), Business (regole pure e porta `IChatGptClient`), Domain (entità) e Infrastructures (`Postgres` con EF Core, `Browser` con Playwright/Chromium, `Memory` del vecchio esempio non più usato dall'API). Il backend F07 espone API OpenAI compatibili su ChatGPT tramite un browser headless reale e automatizza i project: vedi `docs/backend-chatgpt.md`. Non sincronizza i dati della Pages.
 
 ## Roadmap
 

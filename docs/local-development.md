@@ -37,13 +37,13 @@ npm start
 
 Scegliere 1, 4, 6 o 12 riquadri. Il numero di riquadri e gli URL vengono ripristinati al successivo avvio tramite `workspace.json` nella directory dati utente Electron. Le pagine sono Chrome-like tramite Electron Chromium, **non** vere schede di Chrome. Il login di provider terzi (incluso ChatGPT) potrebbe rifiutare embedded Chromium; verificarlo manualmente. Il desktop non ospita la dashboard GitHub Pages nella stessa sessione. Per un URL da salvare serve HTTPS, oppure HTTP solo su `localhost`/`127.0.0.1`; eventuali query, frammenti e credenziali **non** vengono salvati nel workspace. Le URL dei riquadri nascosti restano nel workspace quando passi a un layout più piccolo. La sessione Electron è indipendente dai dati salvati nel workspace. I test automatici `node --test tests/desktop/*.test.cjs` coprono il modello e la persistenza del file, **non** il login ChatGPT né un test grafico multipiattaforma.
 
-## Backend opzionale
+## Backend ChatGPT (F07)
 
 ```bash
-dotnet run --project src/backend/applications/LllmFacade.Api
+cp .env.example .env && docker compose up --build
 ```
 
-API locale dimostrativa su porta ASP.NET di sviluppo. Non è richiesta da Pages e non è protetta per esposizione Internet.
+Istruzioni complete, configurazione e test in `docs/backend-chatgpt.md`. Per sviluppare la SPA admin: `cd src/admin && npm install && npm run dev` (proxy verso l'API su `127.0.0.1:5080`, configurabile con `LLLMFACADE_API_URL`).
 
 ## Test
 

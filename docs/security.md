@@ -6,7 +6,9 @@
 - La lettura è puntuale e avviene solo su click dell'utente: niente polling o esportazione massiva; visualizzazione in memoria, senza invio a terzi.
 - Attenzione: qualsiasi codice JavaScript presente su una Pages pubblica potrebbe inviare messaggi all'estensione se compromesso. Tenere l'origine sotto controllo e ridurre al minimo le permission. Per una release aggiungere ulteriori conferme e revisione della superficie di attacco.
 - Electron: sessione locale persistente, niente Node nelle pagine esterne, niente esecuzione di codice remoto privilegiato. Non caricare URL non attendibili senza ulteriori protezioni.
-- Il backend demo non implementa autenticazione e non deve essere pubblicato su Internet.
+- Il backend F07 protegge le API admin con login a cookie (HttpOnly, SameSite=Strict), cambio password obbligatorio al primo accesso, header anti-CSRF sulle richieste non sicure e rate limiting sul login. Le API `/v1` usano chiavi per endpoint (hash SHA-256, mostrate una volta).
+- Cookie e token ChatGPT sono cifrati con Data Protection (chiavi nel volume `api-keys`), non sono mai restituiti dalle API né registrati nei log; il testo delle risposte resta solo in memoria. Pubblicare solo dietro HTTPS e cambiare `POSTGRES_PASSWORD`.
+- Nessuna tecnica per aggirare o risolvere challenge anti-bot (Cloudflare, Sentinel, Turnstile): se ChatGPT blocca il browser l'errore è mostrato.
 - Le regole dei siti terzi non cambiano in base al fatto che un testo sia salvato o mostrato solo sullo schermo. Valutare il rispetto delle condizioni d'uso prima dell'utilizzo continuativo.
 
 
