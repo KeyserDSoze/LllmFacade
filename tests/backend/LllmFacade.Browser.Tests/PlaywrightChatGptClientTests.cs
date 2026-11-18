@@ -71,6 +71,7 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
             {
                 "modern-button" => ModernComposerPage(withSendButton: true),
                 "modern-enter" => ModernComposerPage(withSendButton: false),
+                "modern-hidden-legacy" => ModernComposerPage(withSendButton: true, hiddenLegacy: true),
                 _ => ComposerPage
             });
         }
@@ -139,10 +140,11 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     }
 
     /// <summary>Structure of the current ChatGPT composer: no #prompt-textarea, a contenteditable textbox, dictation/voice buttons always present.</summary>
-    private static string ModernComposerPage(bool withSendButton) => $$"""
+    private static string ModernComposerPage(bool withSendButton, bool hiddenLegacy = false) => $$"""
         <!doctype html>
         <html><head><meta charset="utf-8"><title>ChatGPT</title></head>
         <body>
+          {{(hiddenLegacy ? "<div id=\"prompt-textarea\" contenteditable=\"true\" style=\"display:none\"></div>" : string.Empty)}}
           <main id="thread"></main>
           <form data-composer-placement="thread" data-chatgpt-composer="">
             <fieldset>
@@ -582,6 +584,7 @@ public sealed class PlaywrightChatGptClientTests
     [Theory]
     [InlineData("modern-button")]
     [InlineData("modern-enter")]
+    [InlineData("modern-hidden-legacy")]
     public async Task SubmitPrompt_WorksWithTheCurrentComposerLayout(string layout)
     {
         await using var harness = new BrowserHarness(options => options.NavigationTimeoutSeconds = 10);
@@ -601,6 +604,7 @@ public sealed class PlaywrightChatGptClientTests
     [Theory]
     [InlineData("modern-button")]
     [InlineData("modern-enter")]
+    [InlineData("modern-hidden-legacy")]
     public async Task StartProjectChat_WorksWithTheCurrentComposerLayout(string layout)
     {
         await using var harness = new BrowserHarness();

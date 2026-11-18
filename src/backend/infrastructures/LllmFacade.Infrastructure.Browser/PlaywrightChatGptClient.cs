@@ -117,7 +117,7 @@ public sealed partial class PlaywrightChatGptClient(
         {
             await OpenComposerAsync(tab.Page, _web.Url(_web.ConversationPagePath.Replace("{conversationId}", Uri.EscapeDataString(conversationId))));
             tab.BeginSubmission(liveText);
-            await tab.Page.Locator(_web.PromptSelector).First.FillAsync(prompt);
+            await TypePromptAsync(tab.Page, prompt);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
             sendAttempted = true;
             await ClickSendAsync(tab.Page);
@@ -157,7 +157,7 @@ public sealed partial class PlaywrightChatGptClient(
         {
             await OpenComposerAsync(tab.Page, _web.Url(_web.ProjectPagePath.Replace("{projectId}", Uri.EscapeDataString(projectId))));
             tab.BeginSubmission(liveText);
-            await tab.Page.Locator(_web.PromptSelector).First.FillAsync(prompt);
+            await TypePromptAsync(tab.Page, prompt);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
             sendAttempted = true;
             await ClickSendAsync(tab.Page);
@@ -404,28 +404,48 @@ public sealed partial class PlaywrightChatGptClient(
 
     private async Task ClickSendAsync(IPage page)
     {
+        var box = page.Locator(_web.PromptSelector).First;
+        var send = page.Locator(_web.SendButtonSelector).First;
         try
         {
-            // The send button only exists once the composer has text, and its markup changes often: Enter is the fallback.
-            await page.Locator(_web.SendButtonSelector).First.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
+            // ChatGPT replaces the voice control with a submit control after its editor state updates.
+            await send.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = 2_000
+            });
+            if (await send.IsEnabledAsync())
+            {
+                await send.ClickAsync();
+                return;
+            }
         }
         catch (TimeoutException)
         {
-            await page.Locator(_web.PromptSelector).First.PressAsync("Enter");
         }
+
+        await box.PressAsync("Enter");
     }
 
-    /// <summary>Fills the composer; some rich-text editors ignore Fill, so text is inserted at the cursor when the box stays empty.</summary>
+    /// <summary>Types in the visible composer so the web app receives the same editor events as a user.</summary>
     private async Task TypePromptAsync(IPage page, string prompt)
     {
         var box = page.Locator(_web.PromptSelector).First;
-        await box.FillAsync(prompt);
+        await box.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await box.ClickAsync();
+        await box.PressAsync("ControlOrMeta+A");
+        await box.PressAsync("Backspace");
+        await page.Keyboard.InsertTextAsync(prompt);
+
         var current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
-        if (string.IsNullOrWhiteSpace(current))
+        if (!string.Equals(current.TrimEnd(), prompt.TrimEnd(), StringComparison.Ordinal))
         {
-            await box.FocusAsync();
-            await page.Keyboard.InsertTextAsync(prompt);
+            await box.FillAsync(prompt);
+            current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
         }
+        if (!string.Equals(current.TrimEnd(), prompt.TrimEnd(), StringComparison.Ordinal))
+            throw new ChatGptException(ChatGptFailure.Interface,
+                "Il testo non è stato acquisito dal composer di ChatGPT: non è stato inviato alcun prompt.");
     }
 
     private string NewChatUrl(CompletionCommand command)

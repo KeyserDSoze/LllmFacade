@@ -43,10 +43,12 @@ public sealed class ChatGptWebOptions
     public string ConversationStreamPattern { get; set; } = "^/backend-api/(f/)?conversation$";
     // The current web app has no #prompt-textarea: the composer is a contenteditable textbox inside form[data-chatgpt-composer].
     public string PromptSelector { get; set; } =
-        "#prompt-textarea, form[data-chatgpt-composer] [contenteditable='true'][role='textbox'], [data-composer-markdown][contenteditable='true']";
+        "#prompt-textarea:visible, form[data-chatgpt-composer] [contenteditable='true'][role='textbox']:visible, " +
+        "[data-composer-markdown][contenteditable='true']:visible, [contenteditable='true'][role='textbox'][aria-label='Ask ChatGPT']:visible";
     public string SendButtonSelector { get; set; } =
-        "[data-testid='send-button'], #composer-submit-button, form[data-chatgpt-composer] button[type='submit'], " +
-        "button[aria-label='Send prompt'], button[aria-label='Send message'], button[aria-label='Invia prompt'], button[aria-label='Invia messaggio']";
+        "form[data-chatgpt-composer] button[type='submit']:visible, [data-testid='send-button']:visible, #composer-submit-button:visible, " +
+        "button[data-composer-send]:visible, button[aria-label='Send prompt']:visible, button[aria-label='Send message']:visible, " +
+        "button[aria-label='Invia prompt']:visible, button[aria-label='Invia messaggio']:visible";
     public string StopButtonSelector { get; set; } = "[data-testid='stop-button']";
     public string AssistantMessageSelector { get; set; } = "[data-message-author-role='assistant']";
     public string LoginSelector { get; set; } = "[data-testid='login-button']";
