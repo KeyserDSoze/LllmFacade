@@ -24,7 +24,10 @@ curl http://127.0.0.1:63400/v1/chat/completions \
 
 `reasoning_effort` (anche `reasoning.effort`) è tradotto con la mappa dell'endpoint; senza valore si usa il predefinito del modello. Supportati solo testo e `n = 1`; l'uso dei token è una stima (~4 caratteri/token).
 
-3. **Tutti i project** legge i project da ChatGPT e permette di attivarli; **Project attivi** mostra le chat in ordine cronologico, il prompt di continuazione e **Porta avanti il lavoro**; **Project disattivati** permette la riattivazione.
+3. **Tutti i project** legge i project da ChatGPT e permette di attivarli; **Project attivi** li mostra a mosaico (pulsante *1 / 2 / 4 per riga*, scelta ricordata dal browser); **Project disattivati** permette la riattivazione.
+   - Ogni tile è un accordion (anche *Comprimi tutti* / *Espandi tutti*): da chiuso resta visibile il pallino di stato e l'ultimo pezzo di testo ricevuto. Verde pulsante = ChatGPT sta scrivendo; giallo = in attesa (prossimo controllo o conferma dell'invio); rosso = errore o connessione persa; blu = completato; grigio = autopilot non avviato.
+   - Aperto, il tile mostra le chat in ordine cronologico (caricate solo all'apertura), il prompt di continuazione, il limite di invii, **Porta avanti il lavoro**, **Salva impostazioni** (attivo solo con modifiche), l'avanzamento live e l'attività recente. Ogni azione mostra un messaggio di esito o l'errore.
+4. **Registro** elenca tutte le azioni (accessi, endpoint, sessione, project, autopilot, richieste OpenAI) con filtri per livello, categoria e project e aggiornamento ogni 3 secondi. L'autopilot registra solo i passaggi (risposta terminata e prompt inviato, errore al primo tentativo e poi ogni 10, connessione ripristinata, completamento), non ogni controllo. Non contiene cookie, token, chiavi, testo dei prompt o delle risposte; le voci più vecchie di `Logs__RetentionDays` (14) sono eliminate.
 
 ## Come funziona
 

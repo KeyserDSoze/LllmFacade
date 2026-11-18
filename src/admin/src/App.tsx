@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import { api, UNAUTHORIZED_EVENT, type Session } from './api';
+import { ActiveProjectsView } from './ActiveProjects';
 import { ChangePasswordView, LoginView } from './AuthViews';
 import { EndpointsView } from './EndpointsView';
-import { ActiveProjectsView, AllProjectsView, InactiveProjectsView } from './ProjectsViews';
+import { LogsView } from './LogsView';
+import { AllProjectsView, InactiveProjectsView } from './ProjectsViews';
 
 const routes = [
   { hash: '#/endpoint', label: 'Endpoint OpenAI' },
   { hash: '#/project', label: 'Tutti i project' },
   { hash: '#/attivi', label: 'Project attivi' },
-  { hash: '#/disattivati', label: 'Project disattivati' }
+  { hash: '#/disattivati', label: 'Project disattivati' },
+  { hash: '#/log', label: 'Registro' }
 ];
 
 function useHash(): string {
@@ -60,7 +63,8 @@ export default function App() {
         {hash === '#/project' ? <AllProjectsView />
           : hash === '#/attivi' ? <ActiveProjectsView />
             : hash === '#/disattivati' ? <InactiveProjectsView />
-              : <EndpointsView />}
+              : hash === '#/log' ? <LogsView />
+                : <EndpointsView />}
       </main>
     </div>
   );

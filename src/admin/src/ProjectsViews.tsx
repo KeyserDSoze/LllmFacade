@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import {
-  api, errorMessage, type ChatGptProject, type Conversation, type Endpoint, type ProjectSettings, type TrackedProject
-} from './api';
-import { formatDateTime, sortConversations, statusLabel } from './logic';
+import { api, errorMessage, type ChatGptProject, type Endpoint, type TrackedProject } from './api';
 
 export function AllProjectsView() {
   const [endpoints, setEndpoints] = useState<Endpoint[] | null>(null);
@@ -92,32 +89,6 @@ export function AllProjectsView() {
   );
 }
 
-export function ActiveProjectsView() {
-  const [projects, setProjects] = useState<TrackedProject[] | null>(null);
-  const [error, setError] = useState('');
-
-  const load = useCallback(async () => {
-    try {
-      setProjects(await api.projects('active'));
-    } catch (failure) {
-      setError(errorMessage(failure));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  return (
-    <section>
-      <div className="section-head"><h1>Project attivi</h1></div>
-      {error && <p role="alert" className="error">{error}</p>}
-      {projects?.length === 0 && <p className="empty">Nessun project attivo: attivane uno da “Tutti i project”.</p>}
-      {projects?.map(project => <ProjectCard key={project.id} initial={project} onDeactivated={load} />)}
-    </section>
-  );
-}
-
 export function InactiveProjectsView() {
   const [projects, setProjects] = useState<TrackedProject[] | null>(null);
   const [error, setError] = useState('');
@@ -159,113 +130,5 @@ export function InactiveProjectsView() {
         ))}
       </ul>
     </section>
-  );
-}
-
-function ProjectCard({ initial, onDeactivated }: { initial: TrackedProject; onDeactivated: () => void }) {
-  const [project, setProject] = useState(initial);
-  const [conversations, setConversations] = useState<Conversation[] | null>(null);
-  const [prompt, setPrompt] = useState(initial.continuationPrompt);
-  const [target, setTarget] = useState(initial.targetConversationId ?? '');
-  const [max, setMax] = useState(initial.maxContinuations?.toString() ?? '');
-  const [live, setLive] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    api.conversations(initial.id)
-      .then(list => setConversations(sortConversations(list)))
-      .catch(failure => {
-        setConversations([]);
-        setError(errorMessage(failure));
-      });
-  }, [initial.id]);
-
-  // Live status: EventSource reconnects by itself when the connection drops.
-  useEffect(() => {
-    const source = new EventSource(api.eventsUrl(initial.id));
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
-    source.addEventListener('status', event => setProject(JSON.parse((event as MessageEvent<string>).data) as TrackedProject));
-    source.addEventListener('live', event => {
-      const data = JSON.parse((event as MessageEvent<string>).data) as { text: string; reset: boolean };
-      setLive(current => (data.reset ? data.text : current + data.text));
-    });
-    return () => source.close();
-  }, [initial.id]);
-
-  const settings = (): ProjectSettings => ({
-    continuationPrompt: prompt,
-    targetConversationId: target || null,
-    maxContinuations: max ? Number(max) : null
-  });
-
-  const run = async (action: () => Promise<TrackedProject>) => {
-    setError('');
-    try {
-      setProject(await action());
-    } catch (failure) {
-      setError(errorMessage(failure));
-    }
-  };
-
-  return (
-    <article className="card project-card" aria-label={`Project ${project.name}`}>
-      <header className="project-head">
-        <h2>{project.name}</h2>
-        <span className={`badge status-${project.status}`} data-testid="autopilot-status">{statusLabel(project.status)}</span>
-        <span className="muted">{project.endpointName}</span>
-        <span className={connected ? 'dot online' : 'dot'} title={connected ? 'Aggiornamenti in tempo reale' : 'Riconnessione in corso'} />
-      </header>
-      <dl className="facts">
-        <dt>Prompt inviati</dt><dd>{project.continuationsSent}{project.maxContinuations ? ` / ${project.maxContinuations}` : ''}</dd>
-        <dt>Ultimo controllo</dt><dd>{formatDateTime(project.lastCheckAt)}</dd>
-        <dt>Prossimo controllo</dt><dd>{project.autopilotEnabled ? formatDateTime(project.nextCheckAt) : '—'}</dd>
-        <dt>Ultimo invio</dt><dd>{formatDateTime(project.lastContinuationAt)}</dd>
-      </dl>
-      {project.lastError && <p className="error">{project.lastError}{project.consecutiveFailures > 1 ? ` (tentativi falliti: ${project.consecutiveFailures})` : ''}</p>}
-      {error && <p role="alert" className="error">{error}</p>}
-
-      <h3>Chat in ordine cronologico</h3>
-      {conversations === null && <p>Caricamento delle chat…</p>}
-      {conversations?.length === 0 && <p className="empty">Nessuna chat nel project.</p>}
-      {conversations && conversations.length > 0 && (
-        <ol className="chats" aria-label="Chat del project">
-          {conversations.map(conversation => (
-            <li key={conversation.id} className={conversation.id === project.currentConversationId ? 'current' : undefined}>
-              <span>{conversation.title}</span> <small className="muted">{formatDateTime(conversation.createdAt)}</small>
-            </li>
-          ))}
-        </ol>
-      )}
-
-      <label>Chat da portare avanti
-        <select value={target} onChange={e => setTarget(e.target.value)}>
-          <option value="">La chat più recente</option>
-          {conversations?.map(conversation => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
-        </select>
-      </label>
-      <label>Prompt di continuazione
-        <textarea rows={3} value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="es. Continua il lavoro dal punto in cui ti sei fermato." />
-      </label>
-      <label>Numero massimo di invii (vuoto = senza limite)
-        <input type="number" min={1} value={max} onChange={e => setMax(e.target.value)} />
-      </label>
-      <div className="actions">
-        {project.autopilotEnabled
-          ? <button type="button" className="danger" onClick={() => run(() => api.stopAutopilot(project.id))}>Ferma</button>
-          : <button type="button" className="primary" onClick={() => run(() => api.startAutopilot(project.id, settings()))}>Porta avanti il lavoro</button>}
-        <button type="button" onClick={() => run(() => api.saveSettings(project.id, settings()))}>Salva impostazioni</button>
-        <button type="button" onClick={async () => {
-          await run(() => api.deactivate(project.id));
-          onDeactivated();
-        }}>Disattiva</button>
-      </div>
-
-      <section aria-label="Avanzamento">
-        <h3>Avanzamento</h3>
-        <pre className="live">{live || 'Nessun testo ricevuto finora.'}</pre>
-      </section>
-    </article>
   );
 }

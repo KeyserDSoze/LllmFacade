@@ -1,4 +1,6 @@
-import type { AutopilotStatus, Conversation, Endpoint, EndpointInput, ModelMapping } from './api';
+import type {
+  AutopilotStatus, Conversation, Endpoint, EndpointInput, LogEntry, LogLevel, ModelMapping, TrackedProject
+} from './api';
 
 export const reasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
@@ -220,3 +222,76 @@ export function curlExample(origin: string, apiKey: string, model: string): stri
     `  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: 'Ciao' }] })}'`
   ].join('\n');
 }
+
+export type DotKind = 'working' | 'pending' | 'error' | 'done' | 'idle';
+
+/** Green = ChatGPT is writing; amber = waiting (next check or send confirmation); red = connection/error; blue = completed. */
+export function dotKind(project: Pick<TrackedProject, 'status' | 'autopilotEnabled' | 'lastError'>): DotKind {
+  if (project.status === 'WaitingRetry') return 'error';
+  if (project.autopilotEnabled && project.lastError) return 'error';
+  if (project.status === 'Generating') return 'working';
+  if (project.status === 'Monitoring' || project.status === 'Submitting') return 'pending';
+  if (project.status === 'Completed') return 'done';
+  return 'idle';
+}
+
+const dotLabels: Record<DotKind, string> = {
+  working: 'Sta lavorando', pending: 'In attesa', error: 'Errore o connessione persa', done: 'Completato', idle: 'Non in esecuzione'
+};
+
+export function dotLabel(kind: DotKind): string {
+  return dotLabels[kind];
+}
+
+/** Last piece of the streamed text on a single line, for the collapsed tile. */
+export function tailSnippet(text: string | undefined, max: number): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `…${flat.slice(-max)}` : flat;
+}
+
+export type GridChoice = 1 | 2 | 4;
+
+export function parseGrid(value: string | null): GridChoice {
+  return value === '1' ? 1 : value === '4' ? 4 : 2;
+}
+
+export function gridColumns(choice: GridChoice): string {
+  return `repeat(${choice}, minmax(0, 1fr))`;
+}
+
+export function parseIdList(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function validateStart(prompt: string, max: string): string | null {
+  if (!prompt.trim()) return 'Scrivi il prompt di continuazione prima di avviare.';
+  if (max.trim() && !/^\d+$/.test(max.trim())) return 'Il numero massimo di invii deve essere un intero tra 1 e 10000.';
+  if (max.trim() && (Number(max) < 1 || Number(max) > 10000)) return 'Il numero massimo di invii deve essere un intero tra 1 e 10000.';
+  return null;
+}
+
+export type ProjectForm = { prompt: string; target: string; max: string };
+
+export function isDirty(project: TrackedProject, form: ProjectForm): boolean {
+  return form.prompt.trim() !== project.continuationPrompt
+    || form.target !== (project.targetConversationId ?? '')
+    || form.max.trim() !== (project.maxContinuations?.toString() ?? '');
+}
+
+export function mergeLogs(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  const byId = new Map<number, LogEntry>();
+  for (const entry of [...current, ...incoming]) byId.set(entry.id, entry);
+  return [...byId.values()].sort((a, b) => b.id - a.id);
+}
+
+export const levelLabels: Record<LogLevel, string> = { Info: 'Info', Warning: 'Avviso', Error: 'Errore' };
+
+export const categoryLabels: Record<string, string> = {
+  accesso: 'Accesso', endpoint: 'Endpoint', sessione: 'Sessione', project: 'Project', autopilot: 'Autopilot', openai: 'API OpenAI'
+};

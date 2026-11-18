@@ -72,6 +72,23 @@ export type Conversation = { id: string; title: string; createdAt: string | null
 
 export type ProjectSettings = { continuationPrompt: string; targetConversationId: string | null; maxContinuations: number | null };
 
+export type LogLevel = 'Info' | 'Warning' | 'Error';
+
+export type LogEntry = {
+  id: number;
+  at: string;
+  level: LogLevel;
+  category: string;
+  message: string;
+  endpointId: string | null;
+  projectId: string | null;
+  subject: string | null;
+};
+
+export type LogPage = { items: LogEntry[]; hasMore: boolean };
+
+export type LogQuery = { level?: string; category?: string; projectId?: string; before?: number; take?: number };
+
 export const UNAUTHORIZED_EVENT = 'lllmfacade:unauthorized';
 
 export class ApiError extends Error {
@@ -139,5 +156,11 @@ export const api = {
     request<TrackedProject>('POST', `/api/projects/${id(projectId)}/autopilot/start`, settings),
   stopAutopilot: (projectId: string) => request<TrackedProject>('POST', `/api/projects/${id(projectId)}/autopilot/stop`),
   conversations: (projectId: string) => request<Conversation[]>('GET', `/api/projects/${id(projectId)}/conversations`),
-  eventsUrl: (projectId: string) => `/api/projects/${id(projectId)}/events`
+  eventsUrl: '/api/projects/events',
+  logs: (query: LogQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value));
+    const text = params.toString();
+    return request<LogPage>('GET', `/api/logs${text ? `?${text}` : ''}`);
+  }
 };

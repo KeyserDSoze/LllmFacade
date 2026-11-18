@@ -9,6 +9,11 @@ type Tracked = Record<string, unknown> & {
   continuationsSent: number;
 };
 
+export type FakeLog = {
+  id: number; at: string; level: 'Info' | 'Warning' | 'Error'; category: string; message: string;
+  endpointId: string | null; projectId: string | null; subject: string | null;
+};
+
 export const ISSUED_KEY = 'lf_chiave-di-test-solo-una-volta';
 
 /** In-memory imitation of the LllmFacade admin API, mounted with page.route (no real backend involved). */
@@ -19,6 +24,9 @@ export class FakeBackend {
   endpoints: Endpoint[] = [];
   tracked: Tracked[] = [];
   requests: Recorded[] = [];
+  logs: FakeLog[] = [];
+  liveText: Record<string, string> = {};
+  settingsError: string | null = null;
   chatGptProjects = [{ projectId: 'g-p-alpha', name: 'Alpha' }, { projectId: 'g-p-beta', name: 'Beta' }];
   conversations = [
     { id: 'c-2', title: 'Seconda chat', createdAt: '2026-11-10T10:00:00Z', updatedAt: '2026-11-18T10:00:00Z' },
@@ -51,6 +59,15 @@ export class FakeBackend {
 
   async install(page: Page) {
     await page.route('**/api/**', route => this.handle(route));
+  }
+
+  addLog(level: FakeLog['level'], category: string, message: string, project?: Tracked | null) {
+    this.logs.unshift({
+      id: (this.logs[0]?.id ?? 0) + 1, at: new Date().toISOString(), level, category, message,
+      endpointId: project?.endpointId ?? null, projectId: project?.id ?? null, subject: project?.name ?? null
+    });
+    // Like the real API, every project change bumps updatedAt (the UI refreshes the recent activity on it).
+    if (project) project.updatedAt = new Date(Date.now() + this.logs.length).toISOString();
   }
 
   private endpointView(id: string, body: Record<string, unknown>): Endpoint {
@@ -116,7 +133,35 @@ export class FakeBackend {
       return json(200, this.tracked.filter(project => project.isActive === active));
     }
     if (path === '/api/projects' && method === 'POST') {
-      return json(201, this.track(String(body.projectId), String(body.name)));
+      const created = this.track(String(body.projectId), String(body.name));
+      this.addLog('Info', 'project', 'Project aggiunto e attivato.', created);
+      return json(201, created);
+    }
+    if (path === '/api/logs') {
+      const minimum = url.searchParams.get('level');
+      const category = url.searchParams.get('category');
+      const projectFilter = url.searchParams.get('projectId');
+      const before = Number(url.searchParams.get('before') || Number.MAX_SAFE_INTEGER);
+      const take = Number(url.searchParams.get('take') || 100);
+      const rows = this.logs.filter(entry =>
+        (!minimum || (minimum === 'error' ? entry.level === 'Error' : entry.level !== 'Info'))
+        && (!category || entry.category === category) && (!projectFilter || entry.projectId === projectFilter) && entry.id < before);
+      return json(200, { items: rows.slice(0, take), hasMore: rows.length > take });
+    }
+    if (path === '/api/projects/events') {
+      // Simulates the worker: a started autopilot is generating and streams text.
+      const events: string[] = ['retry: 1000\n\n'];
+      for (const tracked of this.tracked.filter(item => item.isActive)) {
+        if (tracked.autopilotEnabled && tracked.status === 'Monitoring') {
+          Object.assign(tracked, { status: 'Generating', continuationsSent: 1, currentConversationId: 'c-1' });
+          this.liveText[tracked.id] ??= 'Sto scrivendo il capitolo 3';
+        }
+        events.push(`event: status\ndata: ${JSON.stringify(tracked)}\n\n`);
+        if (this.liveText[tracked.id]) {
+          events.push(`event: live\ndata: ${JSON.stringify({ projectId: tracked.id, text: this.liveText[tracked.id], reset: true })}\n\n`);
+        }
+      }
+      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: events.join('') });
     }
     const projectAction = /^\/api\/projects\/([^/]+)\/(.+)$/.exec(path);
     const project = projectAction && this.tracked.find(t => t.id === decodeURIComponent(projectAction[1]));
@@ -125,32 +170,34 @@ export class FakeBackend {
     switch (projectAction[2]) {
       case 'activate':
         project.isActive = true;
+        this.addLog('Info', 'project', 'Project attivato.', project);
         return json(200, project);
       case 'deactivate':
         Object.assign(project, { isActive: false, autopilotEnabled: false, status: 'Stopped' });
+        this.addLog('Info', 'project', 'Project disattivato (autopilot fermato).', project);
         return json(200, project);
       case 'conversations':
         return json(200, this.conversations);
       case 'settings':
       case 'autopilot/start': {
+        const starting = projectAction[2] === 'autopilot/start';
+        if (!starting && this.settingsError) return json(500, { error: this.settingsError });
         const prompt = String(body.continuationPrompt ?? '').trim();
-        if (projectAction[2] === 'autopilot/start' && !prompt) return json(400, { error: 'Il prompt di continuazione è obbligatorio.' });
+        if (starting && !prompt) {
+          this.addLog('Warning', 'autopilot', 'Avvio rifiutato: Il prompt di continuazione è obbligatorio.', project);
+          return json(400, { error: 'Il prompt di continuazione è obbligatorio.' });
+        }
         Object.assign(project, {
           continuationPrompt: prompt, targetConversationId: body.targetConversationId ?? null, maxContinuations: body.maxContinuations ?? null
         });
-        if (projectAction[2] === 'autopilot/start') Object.assign(project, { autopilotEnabled: true, status: 'Monitoring' });
+        if (starting) Object.assign(project, { autopilotEnabled: true, status: 'Monitoring' });
+        this.addLog('Info', starting ? 'autopilot' : 'project', starting ? 'Autopilot avviato: primo controllo della chat in corso.' : 'Impostazioni salvate.', project);
         return json(200, project);
       }
       case 'autopilot/stop':
         Object.assign(project, { autopilotEnabled: false, status: 'Stopped' });
+        this.addLog('Info', 'autopilot', 'Autopilot fermato.', project);
         return json(200, project);
-      case 'events': {
-        // Simulates the worker: once started, the chat is generating and streams text.
-        if (project.autopilotEnabled) Object.assign(project, { status: 'Generating', continuationsSent: 1, currentConversationId: 'c-1' });
-        const events = [`retry: 300\nevent: status\ndata: ${JSON.stringify(project)}\n\n`];
-        if (project.autopilotEnabled) events.push(`event: live\ndata: ${JSON.stringify({ text: 'Sto scrivendo il capitolo 3', reset: true })}\n\n`);
-        return route.fulfill({ status: 200, contentType: 'text/event-stream', body: events.join('') });
-      }
       default:
         return json(404, { error: 'Non trovato.' });
     }

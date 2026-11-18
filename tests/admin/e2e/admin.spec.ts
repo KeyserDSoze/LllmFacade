@@ -106,14 +106,133 @@ test('carries on the work with the saved prompt and follows the live progress', 
   await card.getByLabel('Numero massimo di invii (vuoto = senza limite)').fill('5');
   await card.getByLabel('Chat da portare avanti').selectOption({ label: 'Prima chat' });
   await card.getByRole('button', { name: 'Porta avanti il lavoro' }).click();
+  await expect(card.getByText(/Autopilot avviato alle/)).toBeVisible();
 
   await expect(card.getByTestId('autopilot-status')).toHaveText('ChatGPT sta lavorando');
   await expect(card.getByRole('region', { name: 'Avanzamento' })).toContainText('Sto scrivendo il capitolo 3');
+  await expect(card.getByRole('region', { name: 'Attività recente' })).toContainText('Autopilot avviato');
   const start = backend.requests.filter(request => request.path.endsWith('/autopilot/start')).at(-1)!;
   expect(start.body).toEqual({ continuationPrompt: 'Continua dal punto in cui ti sei fermato.', targetConversationId: 'c-1', maxContinuations: 5 });
 
   await card.getByRole('button', { name: 'Ferma' }).click();
+  await expect(card.getByText(/Autopilot fermato alle/)).toBeVisible();
   await expect(card.getByTestId('autopilot-status')).toHaveText('Fermato');
+});
+
+test('gives visible feedback when saving settings succeeds or fails', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  backend.track('g-p-alpha', 'Alpha');
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const card = page.getByRole('article', { name: 'Project Alpha' });
+  const save = card.getByRole('button', { name: 'Salva impostazioni' });
+  await expect(save).toBeDisabled();
+
+  await card.getByLabel('Prompt di continuazione').fill('Nuovo prompt');
+  await expect(card.getByText('Modifiche non ancora salvate.')).toBeVisible();
+  await save.click();
+  await expect(card.getByText(/Impostazioni salvate alle/)).toBeVisible();
+  await expect(card.getByText('Modifiche non ancora salvate.')).toHaveCount(0);
+  await expect(card.getByRole('region', { name: 'Attività recente' })).toContainText('Impostazioni salvate.');
+  expect(backend.tracked[0].continuationPrompt).toBe('Nuovo prompt');
+
+  backend.settingsError = 'Database non raggiungibile';
+  await card.getByLabel('Prompt di continuazione').fill('Ancora un altro prompt');
+  await save.click();
+  await expect(card.getByRole('alert')).toContainText('Database non raggiungibile');
+  await expect(card.getByText('Modifiche non ancora salvate.')).toBeVisible();
+});
+
+test('shows active projects as a mosaic and remembers the chosen grid', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  for (const name of ['Alpha', 'Beta', 'Gamma', 'Delta']) backend.track(`g-p-${name.toLowerCase()}`, name);
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const mosaic = page.getByTestId('mosaic');
+  const columns = () => mosaic.evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length);
+  await expect(page.getByRole('article')).toHaveCount(4);
+  await expect.poll(columns).toBe(2);
+
+  await page.getByRole('radio', { name: '4 per riga' }).click();
+  await expect(page.getByRole('radio', { name: '4 per riga' })).toHaveAttribute('aria-checked', 'true');
+  await expect.poll(columns).toBe(4);
+  await page.getByRole('radio', { name: '1 per riga' }).click();
+  await expect.poll(columns).toBe(1);
+
+  await page.reload();
+  await expect(page.getByRole('radio', { name: '1 per riga' })).toHaveAttribute('aria-checked', 'true');
+  await expect.poll(columns).toBe(1);
+});
+
+test('collapses tiles into an accordion that keeps the status dot and the last text visible', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  Object.assign(alpha, { autopilotEnabled: true, status: 'Generating', continuationsSent: 1 });
+  backend.liveText[alpha.id] = `${'x'.repeat(400)} ...e poi il capitolo 3 è pronto`;
+  backend.track('g-p-beta', 'Beta');
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const working = page.getByRole('article', { name: 'Project Alpha' });
+  const idle = page.getByRole('article', { name: 'Project Beta' });
+  await expect(working.getByRole('img', { name: 'Sta lavorando' })).toBeVisible();
+  await expect(working.getByTestId('live-snippet')).toContainText('il capitolo 3 è pronto');
+  await expect(idle.getByRole('img', { name: 'Non in esecuzione' })).toBeVisible();
+  await expect(page.getByText('2 project attivi, 1 sta lavorando.')).toBeVisible();
+
+  const header = working.locator('.tile-head button');
+  await expect(header).toHaveAttribute('aria-expanded', 'true');
+  await header.click();
+  await expect(header).toHaveAttribute('aria-expanded', 'false');
+  await expect(working.getByRole('button', { name: 'Ferma' })).toHaveCount(0);
+  await expect(working.getByRole('img', { name: 'Sta lavorando' })).toBeVisible();
+  await expect(working.getByTestId('live-snippet')).toContainText('il capitolo 3 è pronto');
+  await expect(idle.getByRole('button', { name: 'Porta avanti il lavoro' })).toBeVisible();
+
+  await page.reload();
+  await expect(working.locator('.tile-head button')).toHaveAttribute('aria-expanded', 'false');
+
+  await page.getByRole('button', { name: 'Espandi tutti' }).click();
+  await expect(working.getByRole('button', { name: 'Ferma' })).toBeVisible();
+  await page.getByRole('button', { name: 'Comprimi tutti' }).click();
+  await expect(idle.getByRole('button', { name: 'Porta avanti il lavoro' })).toHaveCount(0);
+});
+
+test('lists the activity log with filters and live refresh', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  backend.addLog('Info', 'endpoint', 'Endpoint creato: 1 modelli, 2 cookie.');
+  backend.addLog('Warning', 'autopilot', 'Errore (tentativo 1): ChatGPT non raggiungibile. Nuovo tentativo programmato.', alpha);
+  backend.addLog('Error', 'sessione', 'Rinnovo sessione non riuscito: Sessione scaduta');
+  await backend.install(page);
+
+  await page.goto('/#/log');
+  const table = page.getByRole('table', { name: 'Registro attività' });
+  await expect(table.getByRole('row')).toHaveCount(4);
+  await expect(table.getByRole('row').nth(1)).toContainText('Rinnovo sessione non riuscito');
+
+  await page.getByLabel('Livello minimo').selectOption('error');
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await page.getByLabel('Livello minimo').selectOption('warning');
+  await expect(table.getByRole('row')).toHaveCount(3);
+  await page.getByLabel('Livello minimo').selectOption('');
+
+  await page.getByLabel('Categoria').selectOption('endpoint');
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await page.getByLabel('Categoria').selectOption('');
+  await page.getByLabel('Filtra per project').selectOption({ label: 'Alpha' });
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await expect(table).toContainText('ChatGPT non raggiungibile');
+  await page.getByLabel('Filtra per project').selectOption('');
+
+  await page.getByLabel('Cerca nel testo').fill('cookie');
+  await expect(table.getByRole('row')).toHaveCount(2);
+  await page.getByLabel('Cerca nel testo').fill('');
+
+  backend.addLog('Info', 'autopilot', 'Connessione ripristinata dopo 1 tentativi falliti.', alpha);
+  await expect(table).toContainText('Connessione ripristinata', { timeout: 8000 });
 });
 
 test('returns to the login when the session expires', async ({ page }) => {
