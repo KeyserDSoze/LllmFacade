@@ -20,7 +20,7 @@ public sealed class AutopilotLogRulesTests
         Assert.Equal(ActivityLevel.Info, entry.Level);
         Assert.Contains("Limite di lunghezza", entry.Message);
         Assert.Contains("nuova chat", entry.Message);
-        Assert.Contains("#1", entry.Message);
+        Assert.Contains("#5", entry.Message);
     }
 
     [Fact]
