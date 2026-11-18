@@ -1,0 +1,14 @@
+{
+  "name": "lllmfacade-admin-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "vitest": "5.1.1",
+    "typescript": "~5.9.3",
+    "@playwright/test": "^1.55.0"
+  }
+}

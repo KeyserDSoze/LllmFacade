@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 const counts = ['critical', 'high', 'moderate', 'low'];
-const workspaces = ['src/frontend', 'tests/frontend', 'src/desktop'];
+const workspaces = ['src/frontend', 'tests/frontend', 'src/desktop', 'src/admin', 'tests/admin'];
 
 export function summarizeAudit(report) {
   if (!report || typeof report !== 'object' || report.error ||
@@ -47,7 +47,9 @@ export function securityBlockers(reports) {
   const required = [
     ['src/frontend', 'production'],
     ['tests/frontend', 'production'],
-    ['src/desktop', 'all']
+    ['src/desktop', 'all'],
+    ['src/admin', 'production'],
+    ['tests/admin', 'production']
   ];
   const blockers = [];
   for (const [workspace, scope] of required) {

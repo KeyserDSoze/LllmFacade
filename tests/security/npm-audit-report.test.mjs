@@ -43,13 +43,27 @@ test('security gate blocks production high severity and Electron devDependency v
   const input = {
     'src/frontend': { all: high, production: empty },
     'tests/frontend': { all: high, production: empty },
-    'src/desktop': { all: critical, production: empty }
+    'src/desktop': { all: critical, production: empty },
+    'src/admin': { all: high, production: empty },
+    'tests/admin': { all: high, production: empty }
   };
   assert.deepEqual(securityBlockers(input), [{
     workspace: 'src/desktop', scope: 'all', package: 'electron', severity: 'critical'
   }]);
   input['src/frontend'].production = high;
   assert.equal(securityBlockers(input).length, 2);
+});
+
+test('security gate covers the production dependencies of the admin SPA served by the API', () => {
+  const empty = { findings: [] };
+  const input = Object.fromEntries(['src/frontend', 'tests/frontend', 'src/desktop', 'src/admin', 'tests/admin']
+    .map(workspace => [workspace, { all: empty, production: empty }]));
+  input['src/admin'] = { all: empty, production: { findings: [{ package: 'react-dom', severity: 'high' }] } };
+  assert.deepEqual(securityBlockers(input), [{
+    workspace: 'src/admin', scope: 'production', package: 'react-dom', severity: 'high'
+  }]);
+  delete input['tests/admin'];
+  assert.throws(() => securityBlockers(input), /tests\/admin/);
 });
 
 test('security gate refuses missing or malformed workspace audit data', () => {
