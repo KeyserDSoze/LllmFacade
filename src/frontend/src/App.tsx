@@ -226,8 +226,20 @@ export default function App() {
             <div className="empty"><Unplug size={32} /><h3>Collega la tua estensione</h3>
               <p>La dashboard potrà visualizzare e gestire le schede ChatGPT già aperte nel tuo Chrome.</p></div>
           ) : visibleTabs.length === 0 ? (
-            <div className="empty"><MessageSquareText size={32} /><h3>Nessuna scheda trovata</h3>
-              <p>Apri ChatGPT in Chrome o scegli un altro progetto, poi aggiorna l’elenco.</p></div>
+            <div className="empty">
+              <MessageSquareText size={32} />
+              <h3>{selectedProject === 'all' ? 'Nessuna scheda trovata' : 'Nessuna chat in questo progetto'}</h3>
+              <p>{selectedProject === 'all'
+                ? 'Apri ChatGPT in Chrome, poi aggiorna l’elenco.'
+                : tabs.length > 0
+                  ? 'Le tue chat sono disponibili nella vista generale. Assegnane una a questo progetto.'
+                  : 'Apri ChatGPT in Chrome e aggiorna l’elenco per assegnare una conversazione.'}</p>
+              {selectedProject !== 'all' && tabs.length > 0 && (
+                <button className="btn secondary" onClick={() => setSelectedProject('all')}>
+                  Mostra tutte le chat per assegnarle
+                </button>
+              )}
+            </div>
           ) : (
             <div className="chat-grid">
               {visibleTabs.map((tab, index) => (

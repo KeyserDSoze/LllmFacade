@@ -26,3 +26,5 @@ input,select,textarea{background:#131a2b;color:#e9eefb;border:1px solid #343e57;
 .saved-links a:hover{background:#2a2b49}
 .saved-links a span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 
+
+.empty .btn{margin-top:18px}

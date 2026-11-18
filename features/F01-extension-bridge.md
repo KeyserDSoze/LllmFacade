@@ -17,3 +17,9 @@
 - Il progetto mostra link riapribili anche quando la conversazione non è fra le tab aperte.
 - Nessuna risposta viene archiviata automaticamente; vedi ADR 0003.
 
+
+## Onboarding progetti (issue #10)
+
+- Quando il progetto selezionato non contiene ancora chat, distinguere il caso di nessuna scheda Chrome da schede presenti ma non assegnate.
+- Se esistono schede ChatGPT aperte, mostrare un'azione esplicita per aprire la vista generale e assegnarne una.
+- Il comportamento è coperto dal test browser Playwright su base path GitHub Pages; non richiede estensione reale.
