@@ -22,5 +22,5 @@ jobs:
           node-version: '22'
       - name: Unit tests for audit report parser
         run: node --test tests/security/*.test.mjs
-      - name: Inventory vulnerabilities in all JS workspaces (diagnostic)
-        run: node script/npm-audit-report.mjs
+      - name: Audit workspaces and enforce shipped-package security gate
+        run: node script/npm-audit-report.mjs --gate

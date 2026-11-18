@@ -40,6 +40,32 @@ export function summarizeAudit(report) {
   };
 }
 
+// Blocking policy: production dependency advisories affect the deployed SPA,
+// while Electron ships its devDependency runtime and must be audited in full.
+// Tooling-only advisories remain visible but do not silently block releases.
+export function securityBlockers(reports) {
+  const required = [
+    ['src/frontend', 'production'],
+    ['tests/frontend', 'production'],
+    ['src/desktop', 'all']
+  ];
+  const blockers = [];
+  for (const [workspace, scope] of required) {
+    const findings = reports?.[workspace]?.[scope]?.findings;
+    if (!Array.isArray(findings)) {
+      throw new Error('Missing or invalid npm audit report: ' + workspace + '/' + scope);
+    }
+    for (const finding of findings) {
+      if (finding.severity === 'high' || finding.severity === 'critical') {
+        blockers.push({
+          workspace, scope, package: finding.package, severity: finding.severity
+        });
+      }
+    }
+  }
+  return blockers;
+}
+
 function npm(cwd, args, allowAuditFindings = false) {
   const result = spawnSync('npm', args, {
     cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
@@ -56,17 +82,27 @@ function npm(cwd, args, allowAuditFindings = false) {
 function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   let criticalOrHigh = 0;
+  const reports = {};
   for (const workspace of workspaces) {
     const cwd = join(root, workspace);
+    reports[workspace] = {};
     console.log('\n## ' + workspace);
     npm(cwd, ['install', '--package-lock-only', '--ignore-scripts', '--no-audit']);
     for (const scope of ['all', 'production']) {
       const args = ['audit', '--json'];
       if (scope === 'production') args.push('--omit=dev');
       const result = summarizeAudit(JSON.parse(npm(cwd, args, true)));
+      reports[workspace][scope] = result;
       if (scope === 'all') criticalOrHigh += result.counts.critical + result.counts.high;
       console.log(scope + ': ' + JSON.stringify(result.counts));
       for (const finding of result.findings) console.log('  ' + JSON.stringify(finding));
+    }
+  }
+  if (process.argv.includes('--gate')) {
+    const blockers = securityBlockers(reports);
+    if (blockers.length) {
+      console.error('Blocking security advisories: ' + JSON.stringify(blockers));
+      process.exitCode = 1;
     }
   }
   if (process.argv.includes('--strict') && criticalOrHigh > 0) {
