@@ -25,7 +25,7 @@ services:
       Admin__RequireHttpsCookie: ${LLLMFACADE_HTTPS_COOKIE:-false}
     ports:
       # Local only by default: publish through an HTTPS reverse proxy before exposing it.
-      - "127.0.0.1:${LLLMFACADE_PORT:-8080}:8080"
+      - "127.0.0.1:${LLLMFACADE_PORT:-63400}:8080"
     volumes:
       - api-keys:/data/keys
     # Chromium needs more shared memory than the Docker default (64 MB).

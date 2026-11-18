@@ -3,21 +3,21 @@
 ## Avvio con Docker
 
 ```bash
-cp .env.example .env      # cambiare POSTGRES_PASSWORD
+node script/init-env.mjs   # crea .env con una password PostgreSQL casuale (non sovrascrive)
 docker compose up --build
 ```
 
-Apri `http://127.0.0.1:8080` (la porta è pubblicata solo su localhost). Primo accesso: `admin` / `admin`, poi cambio password obbligatorio (minimo 12 caratteri). Dietro un reverse proxy HTTPS imposta `LLLMFACADE_HTTPS_COOKIE=true`.
+Apri `http://127.0.0.1:63400` (unica porta pubblicata, solo su localhost; PostgreSQL resta nella rete interna). Primo accesso: `admin` / `admin`, poi cambio password obbligatorio (minimo 12 caratteri). Dietro un reverse proxy HTTPS imposta `LLLMFACADE_HTTPS_COOKIE=true`.
 
 Volumi: `postgres-data` (database) e `api-keys` (chiavi Data Protection). Perdere `api-keys` rende illeggibili cookie e token salvati: vanno reinseriti.
 
 ## Uso
 
 1. **Endpoint OpenAI** → *Nuovo endpoint*: nome, modelli (es. `chatgpt-thinking` → `gpt-5-thinking`), valori di thinking, user agent, lingua, fuso, header, cookie e token. Dalla scheda *Rete* di DevTools si possono incollare gli header copiati (o cURL bash): cookie, token e user agent vanno nei campi giusti.
-2. La chiave API (`lf_...`) è mostrata una sola volta. Base URL: `http://127.0.0.1:8080/v1`.
+2. La chiave API (`lf_...`) è mostrata una sola volta. Base URL: `http://127.0.0.1:63400/v1`.
 
 ```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
+curl http://127.0.0.1:63400/v1/chat/completions \
   -H "Authorization: Bearer lf_..." -H "Content-Type: application/json" \
   -d '{"model":"chatgpt-thinking","reasoning_effort":"high","stream":true,"messages":[{"role":"user","content":"Ciao"}]}'
 ```

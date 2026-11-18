@@ -40,7 +40,7 @@ Scegliere 1, 4, 6 o 12 riquadri. Il numero di riquadri e gli URL vengono riprist
 ## Backend ChatGPT (F07)
 
 ```bash
-cp .env.example .env && docker compose up --build
+node script/init-env.mjs && docker compose up --build
 ```
 
 Istruzioni complete, configurazione e test in `docs/backend-chatgpt.md`. Per sviluppare la SPA admin: `cd src/admin && npm install && npm run dev` (proxy verso l'API su `127.0.0.1:5080`, configurabile con `LLLMFACADE_API_URL`).
