@@ -29,7 +29,7 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 - `node --test tests/extension/*.test.cjs`
 - `node --check src/extension/background.js`
 - `node --check src/desktop/main.cjs`
-- `dotnet test tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj` (SDK 10)
+- `dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj` (SDK 10)
 
 Prima di un merge, la CI deve completare i test automatici. Per la prova reale, seguire `docs/local-development.md`.
 

@@ -22,7 +22,7 @@ jobs:
       - name: Chrome extension tests and syntax
         run: |
           node --check src/extension/background.js
-          node --check src/extension/security.cjs
+          node --check src/extension/security.js
           node --test tests/extension/*.test.cjs
       - name: Electron syntax
         run: |
@@ -39,5 +39,5 @@ jobs:
       - name: Backend build
         run: dotnet build src/backend/LllmFacade.slnx -c Release
       - name: Backend tests
-        run: dotnet test tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj -c Release
+        run: dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj -c Release
 
