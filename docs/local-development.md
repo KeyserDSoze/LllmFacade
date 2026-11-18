@@ -23,7 +23,9 @@ Aprire `http://localhost:5173`. Il sito Github Pages userà `https://keyserdsoze
 5. Selezionare una scheda e usare **Invia prompt** o **Leggi risposta**: test manuale su una pagina reale, sperimentale e con possibile errore per cambio selettori.
 6. Se modifichi il codice dell'estensione, premere **Ricarica** su `chrome://extensions` e ricaricare la dashboard.
 
-Il contenuto delle risposte non va in storage: si perde al refresh. L'associazione progetto/tab è solo una comodità della POC.
+Il contenuto delle risposte non va in storage: si perde al refresh. Le **associazioni ai progetti** vengono salvate localmente soltanto quando la scheda punta a una conversazione `/c/{id}`; restano corrette anche riaprendo ChatGPT in una scheda con ID diverso. Puoi riaprire una conversazione da **Conversazioni da riaprire** nel progetto. Se assegni un progetto dalla home, devi aprire una conversazione e premere **Aggiorna** per rendere stabile il collegamento.
+
+**Attenzione ai dati preesistenti:** i vecchi ID tab della POC (`lllmfacade.assignments.v1`) non si possono migrare in sicurezza; vanno riassegnati una volta sola. La sincronizzazione fra browser o dispositivi è una feature separata (#7).
 
 ## Desktop
 
@@ -54,4 +56,5 @@ In alternativa eseguire singolarmente i comandi in `AGENTS.md`.
 ## Deploy
 
 Il workflow `pages.yml` effettua build Vite con base path `/LllmFacade/` e pubblica `src/frontend/dist` ad ogni push su `main`. Il proprietario deve scegliere **GitHub Actions** in Settings → Pages. Il workflow non pubblica l'estensione o Electron.
+
 

@@ -38,9 +38,15 @@ script/             comandi di verifica
 .github/workflows/  CI e Pages
 ```
 
-Vedi `AGENTS.md` per le convenzioni e `docs/local-development.md` per i comandi. Il deploy Pages avviene dopo il merge su `main` e l'attivazione di **Settings → Pages → GitHub Actions** da parte del proprietario.
+Vedi `AGENTS.md` per le convenzioni e `docs/local-development.md` per i comandi. Il deploy Pages avviene su `main` quando il proprietario abilita **Settings → Pages → GitHub Actions**.
+Lo sviluppo avviene direttamente su `main`, con TDD e avanzamento tracciato in [GitHub Issues](https://github.com/KeyserDSoze/LllmFacade/issues).
+
+## Persistenza delle conversazioni
+
+Le chat standard `/c/{id}` mantengono la loro associazione al progetto anche se cambia il tab ID Chrome. I collegamenti possono essere riaperti dalla dashboard quando la scheda è chiusa. Le associazioni dalla home di ChatGPT restano temporanee fino alla creazione di una conversazione e all'aggiornamento delle schede (ADR 0003). Non viene sincronizzato alcun dato fra dispositivi.
 
 ## Stato
 
 Bootstrap della POC: non è ancora un prodotto e non abbiamo verificato su una sessione reale l'automazione dell'interfaccia ChatGPT o il login in Electron. Nessun endpoint API è esposto su GitHub Pages.
+
 

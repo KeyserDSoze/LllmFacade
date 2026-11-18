@@ -31,5 +31,15 @@ Lingua dei documenti e della UI: italiano. Identificatori e codice: inglese. Bas
 - `node --check src/desktop/main.cjs`
 - `dotnet run --project tests/backend/LllmFacade.Business.Tests/LllmFacade.Business.Tests.csproj` (SDK 10)
 
-Prima di un merge, la CI deve completare i test automatici. Per la prova reale, seguire `docs/local-development.md`.
+## Workflow di sviluppo e GitHub Issues
+
+1. **Prima di ogni sviluppo**, interrogare le issue aperte e chiuse, evitare duplicazioni e scegliere l'issue con priorità più alta. Leggere `AGENTS.md`, `ADR/` e `docs/` prima di cambiare componenti significativi.
+2. Usare `main` come ramo di sviluppo (richiesta del proprietario). Non fare force-push e verificare che la testa di `main` non sia cambiata prima di ogni commit.
+3. Applicare **TDD**: scrivere prima test per il comportamento, quindi implementare il minimo codice, rifattorizzare e aggiornare le specifiche.
+4. Ogni commit significativo include il riferimento all'issue (es. `(#3)`). Dopo la CI, aggiornare l'issue con risultati verificabili, spuntare i criteri completati e chiuderla **solo** quando tutto è soddisfatto.
+5. Controllare anche gli esiti dei workflow e le issue non risolte a ogni sessione. Non chiudere attività che richiedono test reali Chrome/Electron se non effettuati.
+6. La CI deve essere verde su `main` dopo ogni incremento; se fallisce, indagare e correggere subito. Il workflow Pages può fallire se il proprietario non ha ancora attivato Pages.
+
+Per la prova reale, seguire `docs/local-development.md`.
+
 

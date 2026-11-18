@@ -16,3 +16,13 @@ input,select,textarea{background:#131a2b;color:#e9eefb;border:1px solid #343e57;
 @media(max-width:1100px){.connect-panel{grid-template-columns:1fr}.hero-count{width:105px;height:105px}.hero-count strong{font-size:40px}}
 @media(max-width:740px){.shell{display:block}.sidebar{width:auto;height:auto;position:static;padding:16px;display:block}.brand{padding:0 0 15px}.sidebar-footer{display:none}.side-label,.project-row,.add-project{display:none}.sidebar>.nav-item{display:none}.topbar{height:55px;padding:0 18px}.content{padding:20px 18px}.hero{padding:14px 0 30px}.hero-count{display:none}.section-heading{align-items:start;flex-direction:column}.toolbar{width:100%}.toolbar .btn{flex:1}.connect-controls{flex-direction:column}}
 
+
+.assignment-note{font-size:10px;color:#8b94b1;padding:0 18px 14px;line-height:1.4}
+.saved-section{margin-top:32px;background:#111827;border:1px solid #313b53;border-radius:13px;padding:22px}
+.saved-section h3{font:600 18px 'Space Grotesk';margin:0 0 7px}
+.saved-section p{font-size:12px;color:#9aa9c0;margin:0 0 16px}
+.saved-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:9px}
+.saved-links a{display:flex;align-items:center;gap:10px;padding:12px;color:#c9c2fc;border-radius:9px;text-decoration:none;background:#1b2335;border:1px solid #343c58;font-size:12px;min-width:0}
+.saved-links a:hover{background:#2a2b49}
+.saved-links a span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+

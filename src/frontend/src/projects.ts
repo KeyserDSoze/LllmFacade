@@ -5,8 +5,17 @@ export interface Project {
 
 export type Assignments = Record<string, string>;
 
+type ChatTabRef = { id: number; url?: string };
+
 const PROJECT_KEY = 'lllmfacade.projects.v1';
-const ASSIGNMENT_KEY = 'lllmfacade.assignments.v1';
+const ASSIGNMENT_KEY = 'lllmfacade.assignments.v2';
+const STABLE_PREFIX = 'chatgpt:c:';
+const CHAT_ID = /^[a-zA-Z0-9_-]+$/;
+
+function isStableKey(key: string): boolean {
+  return key.startsWith(STABLE_PREFIX) &&
+    CHAT_ID.test(key.slice(STABLE_PREFIX.length));
+}
 
 export function createProject(name: string, id: string): Project {
   const normalized = name.trim();
@@ -40,23 +49,89 @@ export function saveProjects(projects: Project[]): void {
   localStorage.setItem(PROJECT_KEY, JSON.stringify(projects));
 }
 
+// Only canonical /c/{id} URLs are treated as conversations.
+// Home, shared links and custom GPT routes remain transient until explicitly supported.
+export function conversationKey(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' ||
+      !['chatgpt.com', 'chat.openai.com'].includes(parsed.hostname)) {
+      return null;
+    }
+    const match = /^\/c\/([a-zA-Z0-9_-]+)\/?$/.exec(parsed.pathname);
+    return match ? STABLE_PREFIX + match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function tabKey(id: number): string {
+  return 'tab:' + id;
+}
+
+export function projectForTab(assignments: Assignments, tab: ChatTabRef): string {
+  const stable = conversationKey(tab.url);
+  return (stable && assignments[stable]) || assignments[tabKey(tab.id)] || '';
+}
+
+export function assignProject(
+  assignments: Assignments, tab: ChatTabRef, projectId: string
+): Assignments {
+  const stable = conversationKey(tab.url);
+  const key = stable || tabKey(tab.id);
+  const next = { ...assignments };
+  if (projectId) next[key] = projectId;
+  else delete next[key];
+  if (stable) delete next[tabKey(tab.id)];
+  return next;
+}
+
+export function reconcileAssignments(
+  assignments: Assignments, tabs: ChatTabRef[]
+): Assignments {
+  const next = { ...assignments };
+  for (const tab of tabs) {
+    const stable = conversationKey(tab.url);
+    if (!stable) continue;
+    const temporary = tabKey(tab.id);
+    if (!next[stable] && next[temporary]) next[stable] = next[temporary];
+    delete next[temporary];
+  }
+  return next;
+}
+
+function onlyStableAssignments(source: unknown): Assignments {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  return Object.fromEntries(
+    Object.entries(source).filter(([key, value]) =>
+      isStableKey(key) && typeof value === 'string' && value.trim().length > 0
+    )
+  ) as Assignments;
+}
+
 export function loadAssignments(): Assignments {
   try {
-    const data: unknown = JSON.parse(localStorage.getItem(ASSIGNMENT_KEY) || '{}');
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
-    return Object.fromEntries(Object.entries(data).filter(
-      ([key, value]) => key.length > 0 && typeof value === 'string'
-    )) as Assignments;
+    return onlyStableAssignments(JSON.parse(
+      localStorage.getItem(ASSIGNMENT_KEY) || '{}'
+    ));
   } catch {
     return {};
   }
 }
 
 export function saveAssignments(assignments: Assignments): void {
-  localStorage.setItem(ASSIGNMENT_KEY, JSON.stringify(assignments));
+  // A Chrome tab ID may be reused after restart: never persist tab:{id}.
+  localStorage.setItem(ASSIGNMENT_KEY, JSON.stringify(onlyStableAssignments(assignments)));
 }
 
-export function projectForTab(assignments: Assignments, tab: { id: number }): string {
-  return assignments[String(tab.id)] || '';
+export function listSavedLinks(
+  assignments: Assignments, projectId: string
+): Array<{ key: string; url: string }> {
+  return Object.entries(assignments)
+    .filter(([key, value]) => isStableKey(key) && value === projectId)
+    .map(([key]) => ({
+      key,
+      url: 'https://chatgpt.com/c/' + key.slice(STABLE_PREFIX.length)
+    }));
 }
-

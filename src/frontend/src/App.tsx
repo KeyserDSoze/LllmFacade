@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowUpRight, Check, CircleHelp, FolderPlus, Globe2, LoaderCircle,
   MessageSquareText, Monitor, Plus, RefreshCw, Send, Trash2, Unplug, Zap
 } from 'lucide-react';
 import { sendCommand, validExtensionId, type ChatTab } from './bridge';
 import {
-  createProject, loadAssignments, loadProjects, projectForTab,
+  assignProject, conversationKey, createProject, listSavedLinks,
+  loadAssignments, loadProjects, projectForTab, reconcileAssignments,
   saveAssignments, saveProjects, type Assignments, type Project
 } from './projects';
 
@@ -29,9 +30,15 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    saveAssignments(assignments);
+  }, [assignments]);
+
   async function refresh(id = extensionId) {
     const result = await sendCommand<ChatTab[]>(id, { action: 'listTabs' });
     setTabs(result);
+    // A newly opened /c/{id} conversation inherits its temporary tab assignment.
+    setAssignments(previous => reconcileAssignments(previous, result));
   }
 
   async function connect() {
@@ -85,14 +92,11 @@ export default function App() {
     setProjects(updated);
     setAssignments(nextAssignments);
     saveProjects(updated);
-    saveAssignments(nextAssignments);
     if (selectedProject === id) setSelectedProject('all');
   }
 
-  function assignTab(tabId: number, projectId: string) {
-    const next = { ...assignments, [String(tabId)]: projectId };
-    setAssignments(next);
-    saveAssignments(next);
+  function assignTab(tab: ChatTab, projectId: string) {
+    setAssignments(previous => assignProject(previous, tab, projectId));
   }
 
   async function openChat() {
@@ -135,6 +139,10 @@ export default function App() {
 
   const visibleTabs = selectedProject === 'all' ? tabs :
     tabs.filter(tab => projectForTab(assignments, tab) === selectedProject);
+  const savedLinks = selectedProject === 'all' ? [] :
+    listSavedLinks(assignments, selectedProject).filter(link =>
+      !tabs.some(tab => conversationKey(tab.url) === link.key)
+    );
 
   return (
     <div className="shell">
@@ -238,11 +246,15 @@ export default function App() {
                     <span>Progetto</span>
                     <select aria-label={'Progetto della scheda ' + tab.id}
                       value={projectForTab(assignments, tab)}
-                      onChange={event => assignTab(tab.id, event.target.value)}>
+                      onChange={event => assignTab(tab, event.target.value)}>
                       <option value="">Non assegnato</option>
                       {projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
                     </select>
                   </div>
+                  <div className="assignment-note">{conversationKey(tab.url)
+                    ? 'Associazione permanente alla conversazione'
+                    : 'Associazione temporanea: apri una conversazione e premi Aggiorna'
+                  }</div>
                   <div className="reply">
                     <div className="reply-label"><MessageSquareText size={13} /> ULTIMA RISPOSTA
                       <button onClick={() => action(tab.id, 'readLastReply')} disabled={working[tab.id]}>
@@ -265,6 +277,21 @@ export default function App() {
                 </article>
               ))}
             </div>
+          )}
+          {savedLinks.length > 0 && (
+            <section className="saved-section">
+              <h3>Conversazioni da riaprire</h3>
+              <p>Questi collegamenti appartengono al progetto anche quando le schede sono chiuse.</p>
+              <div className="saved-links">
+                {savedLinks.map(link => (
+                  <a key={link.key} href={link.url} target="_blank" rel="noopener noreferrer">
+                    <MessageSquareText size={16} />
+                    <span>{link.url}</span>
+                    <ArrowUpRight size={16} />
+                  </a>
+                ))}
+              </div>
+            </section>
           )}
           <footer className="page-footer">LllmFacade v0.1.0 · POC locale · Nessuna risposta archiviata ·
             <span> Estensione sperimentale e non ufficiale</span></footer>

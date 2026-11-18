@@ -26,6 +26,7 @@ Un ASP.NET Core opzionale separa Applications (API), Business (regole pure), Dom
 
 1. Convalidare messaggistica e UI su Chrome reale, inclusa la pagina ChatGPT.
 2. Verificare e rifinire griglia Electron e autenticazione.
-3. Stabilizzare modello dei progetti, associazione alle chat tramite URL persistenti.
+3. Associazione stabile delle chat tramite URL `/c/{id}` (ADR 0003, issue #3): le altre pagine restano temporanee; i link salvati sono riapribili anche senza scheda aperta.
 4. Progettare backend autenticato, sincronizzazione tra device e adapter per provider diversi.
+
 

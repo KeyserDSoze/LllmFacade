@@ -9,3 +9,11 @@
 - Progetti creati/rinominabili (per la POC aggiunti e rimovibili); associazione a una scheda locale e ripristino della lista dopo refresh.
 - I test coprono validazione dei messaggi e regole dei progetti; la UI ChatGPT reale è un test manuale non sostituibile con unit test.
 
+
+## Associazione progetti (issue #3)
+
+- I link delle conversazioni `/c/{id}` mantengono l'associazione dopo riavvio o apertura su un nuovo tab ID.
+- La home e i link non riconosciuti usano un'associazione temporanea, promossa dopo un aggiornamento della scheda con URL di conversazione.
+- Il progetto mostra link riapribili anche quando la conversazione non è fra le tab aperte.
+- Nessuna risposta viene archiviata automaticamente; vedi ADR 0003.
+
