@@ -38,6 +38,7 @@ public static class Startup
         services.AddSingleton<ProjectEventHub>();
         services.AddSingleton<AutopilotSignal>();
         services.AddSingleton<ActivityLog>();
+        services.AddSingleton<ActiveRequests>();
         services.Configure<LogOptions>(configuration.GetSection("Logs"));
         services.AddScoped<EndpointIdentityService>();
         services.AddScoped<SessionRefreshProcessor>();
@@ -92,6 +93,7 @@ public static class Startup
         app.MapEndpointAdminApi();
         app.MapProjectAdminApi();
         app.MapActivityLogApi();
+        app.MapActivitySummaryApi();
         app.MapOpenAiApi();
         return app;
     }

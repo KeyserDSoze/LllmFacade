@@ -10,6 +10,9 @@ public sealed class TrackedProject
     public string Name { get; set; } = string.Empty;
     public bool IsActive { get; set; }
     public string ContinuationPrompt { get; set; } = string.Empty;
+    /// <summary>First message of the chat created when the current one reaches ChatGPT's length limit; empty uses a generated handoff.</summary>
+    public string NewChatPrompt { get; set; } = string.Empty;
+    public int ChatsCreated { get; set; }
     /// <summary>Null means the most recently updated chat of the project.</summary>
     public string? TargetConversationId { get; set; }
     public bool AutopilotEnabled { get; set; }

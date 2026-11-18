@@ -56,13 +56,23 @@ public static class SessionRefreshPolicy
         TimeSpan interval,
         DateTimeOffset? lastRefreshAt,
         DateTimeOffset? lastAttemptAt,
-        DateTimeOffset? tokenExpiresAt)
+        DateTimeOffset? tokenExpiresAt) =>
+        now >= NextDue(interval, lastRefreshAt, lastAttemptAt, tokenExpiresAt, now);
+
+    /// <summary>When the next renewal is due; a past value means "as soon as the worker scans".</summary>
+    public static DateTimeOffset NextDue(
+        TimeSpan interval,
+        DateTimeOffset? lastRefreshAt,
+        DateTimeOffset? lastAttemptAt,
+        DateTimeOffset? tokenExpiresAt,
+        DateTimeOffset now)
     {
+        var due = lastRefreshAt is { } last ? last + interval : now;
+        if (tokenExpiresAt is { } expiry && expiry - ExpiryMargin < due)
+            due = expiry - ExpiryMargin;
         var lastAttemptFailed = lastAttemptAt is not null && lastAttemptAt != lastRefreshAt;
-        if (lastAttemptFailed && now - lastAttemptAt!.Value < FailureBackoff)
-            return false;
-        if (lastRefreshAt is null || now - lastRefreshAt.Value >= interval)
-            return true;
-        return tokenExpiresAt is { } expiry && expiry - now <= ExpiryMargin;
+        if (lastAttemptFailed && lastAttemptAt!.Value + FailureBackoff > due)
+            due = lastAttemptAt.Value + FailureBackoff;
+        return due;
     }
 }

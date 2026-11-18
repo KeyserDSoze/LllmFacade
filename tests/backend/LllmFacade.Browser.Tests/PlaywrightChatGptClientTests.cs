@@ -33,6 +33,7 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
 
     public ConcurrentQueue<RecordedRequest> Requests { get; } = new();
     public bool LoggedOut { get; set; }
+    public HashSet<string> FullConversations { get; } = [];
     public int ConversationStatus { get; set; } = 200;
     public string ConversationBody { get; set; } = ChatGptStreamParserTests.DeltaStream;
     public string ConversationStateJson { get; set; } = ChatGptResponsesTests.Conversation("assistant", "finished_successfully");
@@ -55,7 +56,11 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
         Requests.Enqueue(new RecordedRequest(request.Method, url.PathAndQuery, await request.AllHeadersAsync(), request.PostData));
         var path = url.AbsolutePath;
         var query = System.Web.HttpUtility.ParseQueryString(url.Query);
-        if (request.Method == "GET" && (path == "/" || path.StartsWith("/c/", StringComparison.Ordinal)))
+        if (request.Method == "GET" && path.StartsWith("/c/", StringComparison.Ordinal) && FullConversations.Contains(path[3..]))
+        {
+            await HtmlAsync(route, FullPage);
+        }
+        else if (request.Method == "GET" && (path == "/" || path.StartsWith("/c/", StringComparison.Ordinal) || path.EndsWith("/project", StringComparison.Ordinal)))
         {
             await HtmlAsync(route, LoggedOut ? LoginPage : ComposerPage);
         }
@@ -123,6 +128,11 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
         return Encode("{\"alg\":\"none\"}") + "." + Encode($"{{\"exp\":{expiresAt.ToUnixTimeSeconds()}}}") + ".firma";
     }
 
+    private const string FullPage = """
+        <!doctype html><html><head><title>ChatGPT</title></head>
+        <body><div class="banner">You've reached the maximum length for this conversation, but you can keep talking by starting a new chat.</div></body></html>
+        """;
+
     private const string LoginPage = """
         <!doctype html><html><head><title>ChatGPT</title></head>
         <body><button data-testid="login-button">Accedi</button></body></html>
@@ -149,6 +159,7 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
               });
               const reader = response.body.getReader();
               while (!(await reader.read()).done) { }
+              if (!match) history.pushState(null, '', '/g/g-p-alpha/c/conv-from-url');
               const answer = document.createElement('div');
               answer.setAttribute('data-message-author-role', 'assistant');
               answer.textContent = 'risposta renderizzata';
@@ -373,5 +384,73 @@ public sealed class PlaywrightChatGptClientTests
     private sealed class SyncProgress(Action<string> report) : IProgress<string>
     {
         public void Report(string value) => report(value);
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_ReportsAFullConversationFromTheBannerWithoutSending()
+    {
+        await using var harness = new BrowserHarness(options => options.NavigationTimeoutSeconds = 5);
+        harness.Fake.FullConversations.Add("conv-1");
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() => harness.Client.SubmitPromptAsync(
+            BrowserHarness.Identity("t"), new PromptTarget("project-1", "conv-1", "g-p-alpha"), "Continua", null, Token));
+
+        Assert.Equal(ChatGptFailure.ConversationFull, error.Failure);
+        Assert.False(error.PromptMayHaveBeenSent);
+        Assert.Empty(harness.Fake.To("/backend-api/f/conversation"));
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_ReportsAFullConversationWhenTheSendIsRejected()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.ConversationStatus = 400;
+        harness.Fake.ConversationBody = """{"detail":"You've reached the maximum length for this conversation"}""";
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() => harness.Client.SubmitPromptAsync(
+            BrowserHarness.Identity("t"), new PromptTarget("project-1", "conv-1", "g-p-alpha"), "Continua", null, Token));
+
+        Assert.Equal(ChatGptFailure.ConversationFull, error.Failure);
+        Assert.False(error.PromptMayHaveBeenSent);
+    }
+
+    [Fact]
+    public async Task StartProjectChat_OpensANewChatInTheProjectAndReturnsItsId()
+    {
+        await using var harness = new BrowserHarness();
+        var identity = BrowserHarness.Identity("t");
+
+        var started = await harness.Client.StartProjectChatAsync(
+            identity, new NewChatTarget("project-1", "g-p-alpha"), "Riparti da qui", null, Token);
+
+        Assert.Equal(new StartedChat("conv-1", SubmissionOutcome.Confirmed), started);
+        Assert.Contains(harness.Fake.Requests, r => r.Method == "GET" && r.PathAndQuery == "/g/g-p-alpha/project");
+        var send = Assert.Single(harness.Fake.To("/backend-api/f/conversation"));
+        using var body = JsonDocument.Parse(send.Body!);
+        Assert.False(body.RootElement.TryGetProperty("conversation_id", out _));
+        Assert.Equal("Riparti da qui", body.RootElement.GetProperty("messages")[0].GetProperty("content").GetProperty("parts")[0].GetString());
+
+        await harness.Client.CloseTabAsync(identity.EndpointId, "project-1");
+    }
+
+    [Fact]
+    public async Task StartProjectChat_FallsBackToTheAddressBarWhenTheStreamHasNoId()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.ConversationBody = "data: [DONE]\n\n";
+
+        var started = await harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("t"), new NewChatTarget("project-2", "g-p-alpha"), "Riparti da qui", null, Token);
+
+        Assert.Equal("conv-from-url", started.ConversationId);
+    }
+
+    [Fact]
+    public async Task StartProjectChat_RejectsProjectIdsThatAreNotChatGptProjects()
+    {
+        await using var harness = new BrowserHarness();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("t"), new NewChatTarget("project-3", "../admin"), "x", null, Token));
     }
 }

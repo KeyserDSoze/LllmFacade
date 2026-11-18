@@ -7,8 +7,21 @@ namespace LllmFacade.Business.Tests;
 public sealed class AutopilotLogRulesTests
 {
     private static AutopilotSnapshot Snap(
-        AutopilotStatus status, string? error = null, int failures = 0, int sent = 0, int? max = null) =>
-        new(status, error, failures, sent, max);
+        AutopilotStatus status, string? error = null, int failures = 0, int sent = 0, int? max = null, int chats = 0) =>
+        new(status, error, failures, sent, max, chats);
+
+    [Fact]
+    public void Describe_ChatRollover_ExplainsTheNewChat()
+    {
+        var entries = AutopilotLogRules.Describe(
+            Snap(AutopilotStatus.Submitting, sent: 4, chats: 0), Snap(AutopilotStatus.Generating, sent: 5, chats: 1));
+
+        var entry = Assert.Single(entries);
+        Assert.Equal(ActivityLevel.Info, entry.Level);
+        Assert.Contains("Limite di lunghezza", entry.Message);
+        Assert.Contains("nuova chat", entry.Message);
+        Assert.Contains("#1", entry.Message);
+    }
 
     [Fact]
     public void Describe_NothingChanged_LogsNothing()

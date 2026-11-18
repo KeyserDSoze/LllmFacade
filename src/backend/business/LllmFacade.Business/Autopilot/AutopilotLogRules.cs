@@ -3,7 +3,7 @@ using LllmFacade.Domain;
 namespace LllmFacade.Business.Autopilot;
 
 public sealed record AutopilotSnapshot(
-    AutopilotStatus Status, string? LastError, int ConsecutiveFailures, int ContinuationsSent, int? MaxContinuations);
+    AutopilotStatus Status, string? LastError, int ConsecutiveFailures, int ContinuationsSent, int? MaxContinuations, int ChatsCreated);
 
 public sealed record LogDraft(ActivityLevel Level, string Message);
 
@@ -15,6 +15,13 @@ public static class AutopilotLogRules
     public static IReadOnlyList<LogDraft> Describe(AutopilotSnapshot before, AutopilotSnapshot after)
     {
         var entries = new List<LogDraft>();
+
+        if (after.ChatsCreated > before.ChatsCreated)
+        {
+            entries.Add(new LogDraft(ActivityLevel.Info,
+                $"Limite di lunghezza della chat raggiunto: creata una nuova chat nel project e inviato il prompt #{after.ContinuationsSent}. La nuova chat è ora quella da portare avanti."));
+            return entries;
+        }
 
         if (after.ContinuationsSent > before.ContinuationsSent)
         {

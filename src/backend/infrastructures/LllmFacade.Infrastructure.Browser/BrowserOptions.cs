@@ -33,6 +33,10 @@ public sealed class ChatGptWebOptions
     public string ConversationApiPath { get; set; } = "/backend-api/conversation/{conversationId}";
     public string ConversationPagePath { get; set; } = "/c/{conversationId}";
     public string NewChatPath { get; set; } = "/?model={model}";
+    public string ProjectPagePath { get; set; } = "/g/{projectId}/project";
+    /// <summary>Text (regex, case-insensitive) ChatGPT shows or returns when a conversation reached its maximum length.</summary>
+    public string ConversationFullPattern { get; set; } =
+        "maximum length for this conversation|reached the maximum length|conversation is too long|lunghezza massima|conversazione .{0,20}troppo lunga";
     public string TemporaryChatQuery { get; set; } = "temporary-chat=true";
     public string ConversationStreamPattern { get; set; } = "^/backend-api/(f/)?conversation$";
     public string PromptSelector { get; set; } = "#prompt-textarea";

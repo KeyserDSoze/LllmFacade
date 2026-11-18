@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using LllmFacade.Business.ChatGpt;
 using LllmFacade.Business.Sessions;
@@ -14,7 +15,7 @@ namespace LllmFacade.Infrastructure.Browser;
 /// the web app runs its own scripts (including anti-abuse checks), reads use in-page fetch like the app does,
 /// and prompts are typed into the composer and sent with the send button.
 /// </summary>
-public sealed class PlaywrightChatGptClient(
+public sealed partial class PlaywrightChatGptClient(
     BrowserSessionManager sessions,
     IOptions<ChatGptWebOptions> webOptions,
     IOptions<BrowserOptions> browserOptions) : IChatGptClient
@@ -127,7 +128,7 @@ public sealed class PlaywrightChatGptClient(
                 return SubmissionOutcome.Unconfirmed;
             var status = await tab.Started;
             if (status >= 400)
-                throw StatusException(status, string.Empty, "ChatGPT ha rifiutato il prompt");
+                throw await RejectedSendAsync(tab, status, cancellationToken);
             return SubmissionOutcome.Confirmed;
         }
         catch (Exception error) when (error is PlaywrightException or TimeoutException)
@@ -143,6 +144,82 @@ public sealed class PlaywrightChatGptClient(
             tab.Gate.Release();
         }
     }
+
+    public async Task<StartedChat> StartProjectChatAsync(
+        ChatGptIdentity identity, NewChatTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken)
+    {
+        var projectId = ChatGptIds.EnsureProjectId(target.ProjectId);
+        var session = await Guard(() => sessions.GetSessionAsync(identity, cancellationToken));
+        var tab = await Guard(() => session.GetOrOpenTabAsync(target.TabKey, cancellationToken));
+        await tab.Gate.WaitAsync(cancellationToken);
+        var sendAttempted = false;
+        try
+        {
+            await OpenComposerAsync(tab.Page, _web.Url(_web.ProjectPagePath.Replace("{projectId}", Uri.EscapeDataString(projectId))));
+            tab.BeginSubmission(liveText);
+            await tab.Page.Locator(_web.PromptSelector).First.FillAsync(prompt);
+            await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
+            sendAttempted = true;
+            await ClickSendAsync(tab.Page);
+
+            var completed = await Task.WhenAny(tab.Started, Task.Delay(TimeSpan.FromSeconds(_browser.ConfirmationTimeoutSeconds), cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
+            var confirmed = completed == tab.Started;
+            if (confirmed && await tab.Started >= 400)
+                throw await RejectedSendAsync(tab, await tab.Started, cancellationToken);
+
+            var conversationId = await WaitForNewConversationIdAsync(tab, cancellationToken)
+                ?? throw new ChatGptException(ChatGptFailure.Interface,
+                    "Prompt inviato in una nuova chat, ma l'ID della chat non è stato rilevato: controllare il project su ChatGPT.",
+                    promptMayHaveBeenSent: true);
+            return new StartedChat(conversationId, confirmed ? SubmissionOutcome.Confirmed : SubmissionOutcome.Unconfirmed);
+        }
+        catch (Exception error) when (error is PlaywrightException or TimeoutException)
+        {
+            throw new ChatGptException(
+                sendAttempted ? ChatGptFailure.Interface : ChatGptFailure.Upstream,
+                (sendAttempted ? "Invio nella nuova chat non verificabile: " : "Pagina del project non disponibile nel browser: ") + Short(error.Message),
+                promptMayHaveBeenSent: sendAttempted,
+                innerException: error);
+        }
+        finally
+        {
+            tab.Gate.Release();
+        }
+    }
+
+    /// <summary>The send was refused by ChatGPT: a length-limit refusal is reported as such, anything else as an upstream error.</summary>
+    private async Task<ChatGptException> RejectedSendAsync(ProjectTab tab, int status, CancellationToken cancellationToken)
+    {
+        await Task.WhenAny(tab.Ended, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken));
+        return IsConversationFull(tab.ErrorBody) is { } full
+            ? full
+            : StatusException(status, tab.ErrorBody, "ChatGPT ha rifiutato il prompt");
+    }
+
+    private async Task<string?> WaitForNewConversationIdAsync(ProjectTab tab, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (true)
+        {
+            if (tab.ConversationId is { } fromStream && ChatGptIds.IsConversationId(fromStream))
+                return fromStream;
+            var fromUrl = ConversationUrl().Match(tab.Page.Url);
+            if (fromUrl.Success && ChatGptIds.IsConversationId(fromUrl.Groups[1].Value))
+                return fromUrl.Groups[1].Value;
+            if (DateTime.UtcNow > deadline)
+                return null;
+            await Task.Delay(200, cancellationToken);
+        }
+    }
+
+    private ChatGptException? IsConversationFull(string text) =>
+        Regex.IsMatch(text, _web.ConversationFullPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1))
+            ? new ChatGptException(ChatGptFailure.ConversationFull, "La chat ha raggiunto il limite di lunghezza di ChatGPT.")
+            : null;
+
+    [GeneratedRegex("/c/([A-Za-z0-9-]{1,64})(?:[/?#]|$)")]
+    private static partial Regex ConversationUrl();
 
     public async IAsyncEnumerable<CompletionChunk> CompleteAsync(
         ChatGptIdentity identity, CompletionCommand command, [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -302,9 +379,14 @@ public sealed class PlaywrightChatGptClient(
         var response = await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         if (response is { Status: 403 } && await response.HeaderValueAsync("cf-mitigated") is not null)
             throw Blocked();
+        // A short prefix is allowed ("You've reached the ..."), but not a long message that merely quotes the sentence.
+        // Playwright only maps IgnoreCase, Multiline and Singleline to JavaScript regex flags.
+        var banner = page.GetByText(new Regex(
+            $"^.{{0,60}}?(?:{_web.ConversationFullPattern})", RegexOptions.IgnoreCase | RegexOptions.Singleline)).First;
         try
         {
-            await page.Locator(_web.PromptSelector).First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await page.Locator(_web.PromptSelector).First.Or(banner).First
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         }
         catch (TimeoutException)
         {
@@ -315,6 +397,9 @@ public sealed class PlaywrightChatGptClient(
             throw new ChatGptException(ChatGptFailure.Interface,
                 $"Casella del prompt non trovata ({_web.PromptSelector}): il layout di ChatGPT potrebbe essere cambiato.");
         }
+
+        if (await banner.IsVisibleAsync())
+            throw new ChatGptException(ChatGptFailure.ConversationFull, "La chat ha raggiunto il limite di lunghezza di ChatGPT.");
     }
 
     private async Task ClickSendAsync(IPage page)

@@ -35,7 +35,7 @@ public static class OpenAiApi
 
     private static async Task ChatCompletionsAsync(
         HttpContext http, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, TimeProvider time,
-        ActivityLog log)
+        ActivityLog log, ActiveRequests active)
     {
         if (await AuthenticateAsync(http, db) is not { } endpoint)
             return;
@@ -66,6 +66,7 @@ public static class OpenAiApi
         var created = time.GetUtcNow().ToUnixTimeSeconds();
         var trace = new RequestTrace();
         var started = time.GetTimestamp();
+        using var running = active.Begin(endpoint.Id, endpoint.Name, model, request.Stream == true);
         try
         {
             if (request.Stream == true)

@@ -290,19 +290,29 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
 /// <summary>Long-lived tab on a tracked project's chat; streams what it receives to the latest listener.</summary>
 internal sealed class ProjectTab(IPage page)
 {
+    private const int MaxErrorBody = 4000;
     private TaskCompletionSource<int> _started = NewSource();
+    private TaskCompletionSource<int> _ended = NewSource();
+    private readonly System.Text.StringBuilder _errorBody = new();
     private ChatGptStreamParser _parser = new();
     private IProgress<string>? _liveText;
+    private int _status;
 
     public IPage Page { get; } = page;
     public SemaphoreSlim Gate { get; } = new(1, 1);
     public Task<int> Started => _started.Task;
+    public Task Ended => _ended.Task;
+    public string ErrorBody => _errorBody.ToString();
+    public string? ConversationId => _parser.ConversationId;
 
     public void BeginSubmission(IProgress<string>? liveText)
     {
         _liveText = liveText;
         _parser = new ChatGptStreamParser();
         _started = NewSource();
+        _ended = NewSource();
+        _errorBody.Clear();
+        _status = 0;
     }
 
     public bool OnSignal(string kind, string data)
@@ -311,11 +321,19 @@ internal sealed class ProjectTab(IPage page)
         {
             case "start":
                 _parser = new ChatGptStreamParser();
-                _started.TrySetResult(int.TryParse(data, out var status) ? status : 0);
+                _status = int.TryParse(data, out var status) ? status : 0;
+                _started.TrySetResult(_status);
+                break;
+            case "chunk" when _status >= 400:
+                if (_errorBody.Length < MaxErrorBody)
+                    _errorBody.Append(data);
                 break;
             case "chunk":
                 foreach (var delta in _parser.Feed(data))
                     _liveText?.Report(delta);
+                break;
+            case "end" or "error":
+                _ended.TrySetResult(0);
                 break;
         }
         return true;

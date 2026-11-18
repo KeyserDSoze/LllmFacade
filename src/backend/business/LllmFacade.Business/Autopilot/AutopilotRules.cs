@@ -17,6 +17,8 @@ public static class AutopilotRules
 {
     public const int MaxPromptLength = 20_000;
     public const int MaxErrorLength = 500;
+    /// <summary>Pending marker for a freshly created chat, whose first message may not be listed yet.</summary>
+    public const string NewChatPending = "new-chat";
 
     public static string NormalizePrompt(string? prompt)
     {
@@ -54,7 +56,7 @@ public static class AutopilotRules
         project.CurrentConversationId = state.ConversationId;
         project.ConsecutiveFailures = 0;
         project.LastError = null;
-        if (project.PendingAfterNodeId is not null && project.PendingAfterNodeId != state.CurrentNodeId)
+        if (project.PendingAfterNodeId is not null && state.CurrentNodeId is not null && project.PendingAfterNodeId != state.CurrentNodeId)
             project.PendingAfterNodeId = null;
 
         if (state.Phase == ConversationPhase.Generating)
@@ -96,6 +98,22 @@ public static class AutopilotRules
         project.ConsecutiveFailures = 0;
         project.Status = confirmed ? AutopilotStatus.Generating : AutopilotStatus.Submitting;
         project.LastError = confirmed ? null : "Invio non confermato: controllo la chat prima di riprovare.";
+        project.NextCheckAt = now + settings.PollInterval;
+    }
+
+    /// <summary>The chat hit ChatGPT's length limit: continue in a new chat, which becomes the one to carry on.</summary>
+    public static void ChatRolledOver(
+        TrackedProject project, string newConversationId, bool confirmed, DateTimeOffset now, AutopilotSettings settings)
+    {
+        project.TargetConversationId = newConversationId;
+        project.CurrentConversationId = newConversationId;
+        project.ChatsCreated++;
+        project.ContinuationsSent++;
+        project.LastContinuationAt = now;
+        project.PendingAfterNodeId = NewChatPending;
+        project.ConsecutiveFailures = 0;
+        project.Status = confirmed ? AutopilotStatus.Generating : AutopilotStatus.Submitting;
+        project.LastError = confirmed ? null : "Invio nella nuova chat non confermato: controllo la chat prima di riprovare.";
         project.NextCheckAt = now + settings.PollInterval;
     }
 

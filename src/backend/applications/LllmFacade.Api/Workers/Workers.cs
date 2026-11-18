@@ -233,7 +233,8 @@ public sealed class AutopilotProcessor(
     }
 
     private static AutopilotSnapshot Snapshot(TrackedProject project) =>
-        new(project.Status, project.LastError, project.ConsecutiveFailures, project.ContinuationsSent, project.MaxContinuations);
+        new(project.Status, project.LastError, project.ConsecutiveFailures, project.ContinuationsSent, project.MaxContinuations,
+            project.ChatsCreated);
 
     private async Task SubmitAsync(
         TrackedProject project, ChatGptIdentity identity, string conversationId, ConversationState state, AutopilotSettings settings,
@@ -251,11 +252,40 @@ public sealed class AutopilotProcessor(
                 cancellationToken);
             AutopilotRules.SubmissionSent(project, state.CurrentNodeId, outcome == SubmissionOutcome.Confirmed, time.GetUtcNow(), settings);
         }
+        catch (ChatGptException error) when (error.Failure == ChatGptFailure.ConversationFull)
+        {
+            await RollOverAsync(project, identity, state, settings, cancellationToken);
+        }
         catch (ChatGptException error) when (error.PromptMayHaveBeenSent)
         {
             AutopilotRules.SubmissionSent(project, state.CurrentNodeId, confirmed: false, time.GetUtcNow(), settings);
             project.LastError = error.Message;
         }
+    }
+
+    /// <summary>The chat reached ChatGPT's length limit: continue in a new chat of the same project and pin it.</summary>
+    private async Task RollOverAsync(
+        TrackedProject project, ChatGptIdentity identity, ConversationState state, AutopilotSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var prompt = NewChatPromptComposer.Compose(project.NewChatPrompt, project.ContinuationPrompt, state.LastAssistantText);
+        var requestedAt = time.GetUtcNow();
+        StartedChat started;
+        try
+        {
+            started = await client.StartProjectChatAsync(
+                identity, new NewChatTarget(TabKey(project), project.ProjectId), prompt, new LiveTextProgress(hub, project.Id), cancellationToken);
+        }
+        catch (ChatGptException error) when (error.PromptMayHaveBeenSent)
+        {
+            // The chat may exist even though its id was not read: adopt the newest one instead of creating a duplicate.
+            var created = (await client.ListProjectConversationsAsync(identity, project.ProjectId, cancellationToken))
+                .Where(c => c.CreatedAt >= requestedAt.AddMinutes(-1))
+                .OrderByDescending(c => c.CreatedAt)
+                .FirstOrDefault() ?? throw error;
+            started = new StartedChat(created.Id, SubmissionOutcome.Unconfirmed);
+        }
+        AutopilotRules.ChatRolledOver(project, started.ConversationId, started.Outcome == SubmissionOutcome.Confirmed, time.GetUtcNow(), settings);
     }
 
     private async Task<string> LatestConversationAsync(ChatGptIdentity identity, TrackedProject project, CancellationToken cancellationToken)

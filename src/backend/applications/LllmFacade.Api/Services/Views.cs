@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using LllmFacade.Business.Sessions;
 using LllmFacade.Domain;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Json;
@@ -33,6 +34,7 @@ public sealed record EndpointView(
     DateTimeOffset? LastRefreshAttemptAt,
     string? LastError,
     DateTimeOffset? LastErrorAt,
+    DateTimeOffset? NextRefreshAt,
     bool IsEnabled,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt)
@@ -40,8 +42,13 @@ public sealed record EndpointView(
     public static EndpointView From(ChatGptEndpoint e) => new(
         e.Id, e.Name, e.Models, e.ThinkingEfforts, e.UseTemporaryChat, e.UserAgent, e.Locale, e.TimeZone, e.ExtraHeaders,
         e.ApiKeyPrefix, e.ProtectedAccessToken is not null, e.AccessTokenExpiresAt, e.CookieCount, e.AccountEmail,
-        e.RefreshIntervalMinutes, e.LastRefreshAt, e.LastRefreshAttemptAt, e.LastError, e.LastErrorAt, e.IsEnabled,
+        e.RefreshIntervalMinutes, e.LastRefreshAt, e.LastRefreshAttemptAt, e.LastError, e.LastErrorAt, NextRefresh(e), e.IsEnabled,
         e.CreatedAt, e.UpdatedAt);
+
+    public static DateTimeOffset? NextRefresh(ChatGptEndpoint e) => e.IsEnabled
+        ? SessionRefreshPolicy.NextDue(
+            TimeSpan.FromMinutes(e.RefreshIntervalMinutes), e.LastRefreshAt, e.LastRefreshAttemptAt, e.AccessTokenExpiresAt, DateTimeOffset.UtcNow)
+        : null;
 }
 
 public sealed record TrackedProjectView(
@@ -63,13 +70,15 @@ public sealed record TrackedProjectView(
     DateTimeOffset? LastContinuationAt,
     int ConsecutiveFailures,
     string? LastError,
+    string NewChatPrompt,
+    int ChatsCreated,
     DateTimeOffset UpdatedAt)
 {
     public static TrackedProjectView From(TrackedProject p) => new(
         p.Id, p.EndpointId, p.Endpoint?.Name ?? string.Empty, p.ProjectId, p.Name, p.IsActive, p.ContinuationPrompt,
         p.TargetConversationId, p.AutopilotEnabled, p.MaxContinuations, p.ContinuationsSent, p.Status,
         p.CurrentConversationId, p.LastCheckAt, p.NextCheckAt, p.LastContinuationAt, p.ConsecutiveFailures,
-        p.LastError, p.UpdatedAt);
+        p.LastError, p.NewChatPrompt, p.ChatsCreated, p.UpdatedAt);
 }
 
 public sealed record ProjectEvent(string Type, string Json);

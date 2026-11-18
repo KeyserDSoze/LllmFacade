@@ -13,7 +13,8 @@ public sealed record ChatGptProjectView(string ProjectId, string Name, Guid? Tra
 
 public sealed record TrackProjectRequest(Guid EndpointId, string? ProjectId, string? Name);
 
-public sealed record ProjectSettingsRequest(string? ContinuationPrompt, string? TargetConversationId, int? MaxContinuations);
+public sealed record ProjectSettingsRequest(
+    string? ContinuationPrompt, string? TargetConversationId, int? MaxContinuations, string? NewChatPrompt = null);
 
 public sealed record ConversationView(string Id, string Title, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt);
 
@@ -223,6 +224,10 @@ public static class ProjectAdminApi
         if (request.MaxContinuations is < 1 or > 10_000)
             throw new ArgumentException("Il numero massimo di continuazioni deve essere tra 1 e 10000.");
         project.MaxContinuations = request.MaxContinuations;
+        var newChatPrompt = request.NewChatPrompt?.Trim() ?? string.Empty;
+        if (newChatPrompt.Length > AutopilotRules.MaxPromptLength)
+            throw new ArgumentException($"Il prompt della nuova chat supera {AutopilotRules.MaxPromptLength} caratteri.");
+        project.NewChatPrompt = newChatPrompt;
     }
 }
 

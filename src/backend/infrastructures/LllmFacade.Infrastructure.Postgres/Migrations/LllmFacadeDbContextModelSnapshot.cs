@@ -225,6 +225,9 @@ namespace LllmFacade.Infrastructure.Postgres.Migrations
                     b.Property<bool>("AutopilotEnabled")
                         .HasColumnType("boolean");
 
+                    b.Property<int>("ChatsCreated")
+                        .HasColumnType("integer");
+
                     b.Property<int>("ConsecutiveFailures")
                         .HasColumnType("integer");
 
@@ -264,6 +267,10 @@ namespace LllmFacade.Infrastructure.Postgres.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NewChatPrompt")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<DateTimeOffset?>("NextCheckAt")
                         .HasColumnType("timestamp with time zone");

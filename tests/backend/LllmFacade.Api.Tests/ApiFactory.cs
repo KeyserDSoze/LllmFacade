@@ -168,6 +168,10 @@ public sealed class FakeChatGptClient : IChatGptClient
     public Exception? Failure { get; set; }
     public SubmissionOutcome Outcome { get; set; } = SubmissionOutcome.Confirmed;
     public string? LiveStorageState { get; set; }
+    public HashSet<string> FullConversations { get; } = [];
+    public string NewChatId { get; set; } = "conv-created";
+    public Exception? NewChatFailure { get; set; }
+    public ConcurrentQueue<(NewChatTarget Target, string Prompt)> NewChats { get; } = new();
     public ConcurrentQueue<ChatGptIdentity> Identities { get; } = new();
     public ConcurrentQueue<CompletionCommand> Commands { get; } = new();
     public ConcurrentQueue<(PromptTarget Target, string Prompt)> Submissions { get; } = new();
@@ -191,9 +195,22 @@ public sealed class FakeChatGptClient : IChatGptClient
         ChatGptIdentity identity, PromptTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken) =>
         Run(identity, () =>
         {
+            if (FullConversations.Contains(target.ConversationId))
+                throw new ChatGptException(ChatGptFailure.ConversationFull, "La chat ha raggiunto il limite di lunghezza di ChatGPT.");
             Submissions.Enqueue((target, prompt));
             liveText?.Report("Sto lavorando");
             return Outcome;
+        });
+
+    public Task<StartedChat> StartProjectChatAsync(
+        ChatGptIdentity identity, NewChatTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken) =>
+        Run(identity, () =>
+        {
+            if (NewChatFailure is not null)
+                throw NewChatFailure;
+            NewChats.Enqueue((target, prompt));
+            liveText?.Report("Nuova chat avviata");
+            return new StartedChat(NewChatId, Outcome);
         });
 
     public async IAsyncEnumerable<CompletionChunk> CompleteAsync(
@@ -227,6 +244,15 @@ public sealed class FakeChatGptClient : IChatGptClient
     private Task<T> Run<T>(ChatGptIdentity identity, Func<T> action)
     {
         Identities.Enqueue(identity);
-        return Failure is null ? Task.FromResult(action()) : Task.FromException<T>(Failure);
+        if (Failure is not null)
+            return Task.FromException<T>(Failure);
+        try
+        {
+            return Task.FromResult(action());
+        }
+        catch (Exception error)
+        {
+            return Task.FromException<T>(error);
+        }
     }
 }

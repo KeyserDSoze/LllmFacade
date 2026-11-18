@@ -36,6 +36,11 @@ public sealed record CompletionChunk(string Text, bool IsFinal = false, string? 
 /// <summary>A browser tab kept open for one tracked project.</summary>
 public sealed record PromptTarget(string TabKey, string ConversationId, string? ProjectId);
 
+/// <summary>Where to open a brand new chat inside a project.</summary>
+public sealed record NewChatTarget(string TabKey, string ProjectId);
+
+public sealed record StartedChat(string ConversationId, SubmissionOutcome Outcome);
+
 public enum SubmissionOutcome
 {
     Confirmed,
@@ -59,6 +64,10 @@ public interface IChatGptClient
     Task<SubmissionOutcome> SubmitPromptAsync(
         ChatGptIdentity identity, PromptTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken);
 
+    /// <summary>Opens a new chat in the project, sends the prompt and returns the id of the created conversation.</summary>
+    Task<StartedChat> StartProjectChatAsync(
+        ChatGptIdentity identity, NewChatTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken);
+
     IAsyncEnumerable<CompletionChunk> CompleteAsync(
         ChatGptIdentity identity, CompletionCommand command, CancellationToken cancellationToken);
 
@@ -78,7 +87,9 @@ public enum ChatGptFailure
     Busy,
     Upstream,
     Interface,
-    Timeout
+    Timeout,
+    /// <summary>The conversation reached ChatGPT's maximum length: only a new chat can continue the work.</summary>
+    ConversationFull
 }
 
 public sealed class ChatGptException(
