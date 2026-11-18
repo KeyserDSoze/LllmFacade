@@ -1,0 +1,31 @@
+# Architettura
+
+## Flusso web ↔ estensione
+
+```text
+GitHub Pages (React)
+   | chrome.runtime.sendMessage(extensionId, request)
+   v
+Estensione Chrome MV3 (onMessageExternal)
+   | controllo origin/azione/tab/URL
+   +---- chrome.tabs (elenco, apertura, attivazione)
+   +---- chrome.scripting (POC: prompt/ultima risposta su ChatGPT)
+```
+
+L'estensione non è un server HTTP, non espone porte ed evita CORS tra la Pages e ChatGPT. La web app deve conoscere l'ID dell'estensione locale (diverso per installazione). Non esiste una sessione condivisa fra browser desktop Electron e Chrome.
+
+## Desktop
+
+Electron ospita un controllo locale e fino a dodici WebContentsView, ciascuna una vera pagina navigabile. Tutte le view usano la stessa partizione persistente Electron: login e cookie possono essere condivisi **tra riquadri Electron**, se il provider consente l'autenticazione in quel browser. Non importiamo cookie del browser Chrome.
+
+## Backend
+
+Un ASP.NET Core opzionale separa Applications (API), Business (regole pure), Domain (modelli) e Infrastructures (adapter). La prima API è un esempio locale, senza autenticazione e quindi **non da pubblicare**. Nessun dato della Pages viene automaticamente sincronizzato con l'API. L'integrazione futura richiederà identità, autorizzazioni, persistenza e migrazioni.
+
+## Roadmap
+
+1. Convalidare messaggistica e UI su Chrome reale, inclusa la pagina ChatGPT.
+2. Verificare e rifinire griglia Electron e autenticazione.
+3. Stabilizzare modello dei progetti, associazione alle chat tramite URL persistenti.
+4. Progettare backend autenticato, sincronizzazione tra device e adapter per provider diversi.
+

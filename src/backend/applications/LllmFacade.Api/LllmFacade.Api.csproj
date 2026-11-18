@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../business/LllmFacade.Business/LllmFacade.Business.csproj" />
+    <ProjectReference Include="../../infrastructures/LllmFacade.Infrastructure.Memory/LllmFacade.Infrastructure.Memory.csproj" />
+  </ItemGroup>
+</Project>
+
