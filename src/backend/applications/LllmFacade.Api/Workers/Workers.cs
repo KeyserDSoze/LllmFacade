@@ -196,10 +196,14 @@ public sealed class AutopilotProcessor(
 
         var settings = options.Value.ToSettings();
         var before = Snapshot(project);
+        var selectionChanged = false;
         try
         {
             var identity = identities.CreateIdentity(endpoint);
             var conversationId = project.TargetConversationId ?? await LatestConversationAsync(identity, project, cancellationToken);
+            selectionChanged = AutopilotRules.SelectConversation(project, conversationId, time.GetUtcNow(), settings);
+            if (selectionChanged)
+                hub.PublishStatus(project);
             var state = await client.GetConversationStateAsync(identity, conversationId, cancellationToken);
             if (state.Phase == ConversationPhase.Finished && state.LastAssistantText is { } answer)
                 hub.SetLiveText(project.Id, answer);
@@ -227,6 +231,9 @@ public sealed class AutopilotProcessor(
             return;
         }
         hub.PublishStatus(project);
+        if (selectionChanged)
+            await activity.InfoAsync(ActivityCategories.Project,
+                "Chat più recente selezionata o aggiornata per il monitoraggio del project.", project.EndpointId, project.Id, project.Name);
         foreach (var entry in AutopilotLogRules.Describe(before, Snapshot(project)))
             await activity.WriteAsync(entry.Level, ActivityCategories.Autopilot, entry.Message, project.EndpointId, project.Id, project.Name);
         await identities.PersistBrowserStateAsync(endpoint, CancellationToken.None);

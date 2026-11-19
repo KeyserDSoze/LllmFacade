@@ -15,7 +15,7 @@ public sealed class BrowserOptions
     public string? ExecutablePath { get; set; }
     public List<string> Args { get; set; } = [];
     public int MaxPagesPerEndpoint { get; set; } = 3;
-    public int MaxTabsPerEndpoint { get; set; } = 8;
+    public int MaxTabsPerEndpoint { get; set; } = 24;
     public int QueueTimeoutSeconds { get; set; } = 120;
     public int NavigationTimeoutSeconds { get; set; } = 60;
     public int ConfirmationTimeoutSeconds { get; set; } = 60;
@@ -38,7 +38,9 @@ public sealed class ChatGptWebOptions
     public string ProjectPagePath { get; set; } = "/g/{projectId}/project";
     /// <summary>Text (regex, case-insensitive) ChatGPT shows or returns when a conversation reached its maximum length.</summary>
     public string ConversationFullPattern { get; set; } =
-        "maximum length for this conversation|reached the maximum length|conversation is too long|lunghezza massima|conversazione .{0,20}troppo lunga";
+        "maximum length for this conversation|reached the maximum length|conversation is too long|" +
+        "context length exceeded|conversation length exceeded|exceeded .{0,30}(length|limit)|" +
+        "(length|limit) .{0,30}exceeded|start(ing)? a new chat|lunghezza massima|limite.{0,20}(contesto|conversazione)|conversazione .{0,20}troppo lunga";
     public string TemporaryChatQuery { get; set; } = "temporary-chat=true";
     public string ConversationStreamPattern { get; set; } = "^/backend-api/(f/)?conversation$";
     // The current web app has no #prompt-textarea: the composer is a contenteditable textbox inside form[data-chatgpt-composer].

@@ -36,6 +36,8 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     /// <summary>"classic" (#prompt-textarea), "modern-button" or "modern-enter" (composer of the current web app).</summary>
     public string Layout { get; set; } = "classic";
     public HashSet<string> FullConversations { get; } = [];
+    public string? FullMessageAfterFailedSend { get; set; }
+    public string? ProjectRouteAfterConversationLoad { get; set; }
     public int ConversationStatus { get; set; } = 200;
     public string ConversationBody { get; set; } = ChatGptStreamParserTests.DeltaStream;
     public string ConversationStateJson { get; set; } = ChatGptResponsesTests.Conversation("assistant", "finished_successfully");
@@ -69,9 +71,13 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
         {
             await HtmlAsync(route, LoggedOut ? LoginPage : Layout switch
             {
-                "modern-button" => ModernComposerPage(withSendButton: true),
-                "modern-enter" => ModernComposerPage(withSendButton: false),
-                "modern-hidden-legacy" => ModernComposerPage(withSendButton: true, hiddenLegacy: true),
+                "modern-button" => ModernComposerPage(withSendButton: true, fullAfterSend: FullMessageAfterFailedSend,
+                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                "modern-enter" => ModernComposerPage(withSendButton: false, fullAfterSend: FullMessageAfterFailedSend,
+                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                "modern-hidden-legacy" => ModernComposerPage(withSendButton: true, hiddenLegacy: true, fullAfterSend: FullMessageAfterFailedSend,
+                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                "modern-url-only" => ModernComposerPage(withSendButton: true, urlOnly: true),
                 _ => ComposerPage
             });
         }
@@ -140,7 +146,9 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     }
 
     /// <summary>Structure of the current ChatGPT composer: no #prompt-textarea, a contenteditable textbox, dictation/voice buttons always present.</summary>
-    private static string ModernComposerPage(bool withSendButton, bool hiddenLegacy = false) => $$"""
+    private static string ModernComposerPage(
+        bool withSendButton, bool hiddenLegacy = false, string? fullAfterSend = null, bool urlOnly = false,
+        string? projectConversationRoute = null) => $$"""
         <!doctype html>
         <html><head><meta charset="utf-8"><title>ChatGPT</title></head>
         <body>
@@ -162,10 +170,18 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
           </form>
           <script>
             document.cookie = 'page-visit=1; path=/; secure';
+            const projectConversationRoute = {{JsonSerializer.Serialize(projectConversationRoute)}};
+            if (projectConversationRoute && /^\/c\//.test(location.pathname)) {
+              history.replaceState(null, '', projectConversationRoute);
+            }
             const editor = document.getElementById('editor');
             async function send() {
               const prompt = editor.innerText.trim();
               if (!prompt) return;
+              if ({{(urlOnly ? "true" : "false")}}) {
+                history.pushState(null, '', '/g/g-p-alpha/c/conv-url-only');
+                return;
+              }
               const match = location.pathname.match(/\/c\/([^/]+)$/);
               const body = { action: 'next', model: 'auto', messages: [{ id: 'm1', author: { role: 'user' }, content: { content_type: 'text', parts: [prompt] } }] };
               if (match) body.conversation_id = match[1];
@@ -176,7 +192,14 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
               });
               const reader = response.body.getReader();
               while (!(await reader.read()).done) { }
-              if (!match) history.pushState(null, '', '/g/g-p-alpha/c/conv-from-url');
+              const fullMessage = {{JsonSerializer.Serialize(fullAfterSend)}};
+              if (!response.ok && fullMessage) {
+                const alert = document.createElement('div');
+                alert.setAttribute('role', 'alert');
+                alert.textContent = fullMessage;
+                document.body.appendChild(alert);
+              }
+              if (!match && response.ok) history.pushState(null, '', '/g/g-p-alpha/c/conv-from-url');
               const answer = document.createElement('div');
               answer.setAttribute('data-message-author-role', 'assistant');
               answer.textContent = 'risposta renderizzata';
@@ -561,6 +584,25 @@ public sealed class PlaywrightChatGptClientTests
     }
 
     [Fact]
+    public async Task StartProjectChat_ReusesTheCanonicalProjectRouteWithSlug()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.Layout = "modern-button";
+        harness.Fake.ProjectRouteAfterConversationLoad = "/g/g-p-alpha-project-name/c/conv-1";
+        var identity = BrowserHarness.Identity("t");
+
+        var existing = await harness.Client.SubmitPromptAsync(
+            identity, new PromptTarget("project-route", "conv-1", "g-p-alpha"), "Continua", null, Token);
+        Assert.Equal(SubmissionOutcome.Confirmed, existing);
+
+        await harness.Client.StartProjectChatAsync(
+            identity, new NewChatTarget("project-route", "g-p-alpha"), "Riparti da qui", null, Token);
+
+        Assert.Contains(harness.Fake.Requests,
+            request => request.Method == "GET" && request.PathAndQuery == "/g/g-p-alpha-project-name/project");
+    }
+
+    [Fact]
     public async Task StartProjectChat_FallsBackToTheAddressBarWhenTheStreamHasNoId()
     {
         await using var harness = new BrowserHarness();
@@ -570,6 +612,18 @@ public sealed class PlaywrightChatGptClientTests
             BrowserHarness.Identity("t"), new NewChatTarget("project-2", "g-p-alpha"), "Riparti da qui", null, Token);
 
         Assert.Equal("conv-from-url", started.ConversationId);
+    }
+
+    [Fact]
+    public async Task StartProjectChat_ConfirmsWhenTheConversationUrlAppearsEvenIfTheStreamStartWasMissed()
+    {
+        await using var harness = new BrowserHarness(options => options.ConfirmationTimeoutSeconds = 1);
+        harness.Fake.Layout = "modern-url-only";
+
+        var started = await harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("t"), new NewChatTarget("project-url-only", "g-p-alpha"), "Riparti da qui", null, Token);
+
+        Assert.Equal(new StartedChat("conv-url-only", SubmissionOutcome.Confirmed), started);
     }
 
     [Fact]
@@ -614,6 +668,22 @@ public sealed class PlaywrightChatGptClientTests
             BrowserHarness.Identity("t"), new NewChatTarget("project-modern-new", "g-p-alpha"), "Riparti da qui", null, Token);
 
         Assert.Equal("conv-1", started.ConversationId);
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_ClassifiesAVisibleLengthLimitAfterGenericHttp500AsConversationFull()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.Layout = "modern-button";
+        harness.Fake.ConversationStatus = 500;
+        harness.Fake.ConversationBody = """{"detail":"Request timeout"}""";
+        harness.Fake.FullMessageAfterFailedSend = "Context length exceeded. Start a new chat to continue.";
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() => harness.Client.SubmitPromptAsync(
+            BrowserHarness.Identity("t"), new PromptTarget("project-modern-full", "conv-1", "g-p-alpha"), "Continua", null, Token));
+
+        Assert.Equal(ChatGptFailure.ConversationFull, error.Failure);
+        Assert.False(error.PromptMayHaveBeenSent);
     }
 
     [Fact]

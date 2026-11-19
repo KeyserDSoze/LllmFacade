@@ -30,6 +30,20 @@ public static class AutopilotRules
         return normalized;
     }
 
+    public static bool SelectConversation(
+        TrackedProject project, string conversationId, DateTimeOffset now, AutopilotSettings settings)
+    {
+        if (project.CurrentConversationId == conversationId)
+            return false;
+
+        project.CurrentConversationId = conversationId;
+        project.PendingAfterNodeId = null;
+        project.LastError = null;
+        project.Status = AutopilotStatus.Monitoring;
+        project.NextCheckAt = now;
+        return true;
+    }
+
     public static void Start(TrackedProject project, string? prompt, int? maxContinuations, DateTimeOffset now)
     {
         if (!project.IsActive)

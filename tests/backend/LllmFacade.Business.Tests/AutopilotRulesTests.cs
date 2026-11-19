@@ -53,6 +53,24 @@ public sealed class AutopilotRulesTests
     }
 
     [Fact]
+    public void SelectConversation_UpdatesTheLiveSelectionAndClearsTheOldPendingNode()
+    {
+        var project = Running();
+        project.CurrentConversationId = "old";
+        project.PendingAfterNodeId = "n-old";
+        project.Status = AutopilotStatus.Submitting;
+
+        var changed = AutopilotRules.SelectConversation(project, "new", Now, Settings);
+
+        Assert.True(changed);
+        Assert.Equal("new", project.CurrentConversationId);
+        Assert.Null(project.PendingAfterNodeId);
+        Assert.Equal(AutopilotStatus.Monitoring, project.Status);
+        Assert.Equal(Now, project.NextCheckAt);
+        Assert.False(AutopilotRules.SelectConversation(project, "new", Now, Settings));
+    }
+
+    [Fact]
     public void Observe_WhileGeneratingWaitsForNextPoll()
     {
         var project = Running();

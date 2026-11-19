@@ -155,7 +155,7 @@ public sealed partial class PlaywrightChatGptClient(
         var sendAttempted = false;
         try
         {
-            await OpenComposerAsync(tab.Page, _web.Url(_web.ProjectPagePath.Replace("{projectId}", Uri.EscapeDataString(projectId))));
+            await OpenComposerAsync(tab.Page, ProjectPageUrl(tab.Page.Url, projectId));
             tab.BeginSubmission(liveText);
             await TypePromptAsync(tab.Page, prompt);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
@@ -172,7 +172,9 @@ public sealed partial class PlaywrightChatGptClient(
                 ?? throw new ChatGptException(ChatGptFailure.Interface,
                     "Prompt inviato in una nuova chat, ma l'ID della chat non è stato rilevato: controllare il project su ChatGPT.",
                     promptMayHaveBeenSent: true);
-            return new StartedChat(conversationId, confirmed ? SubmissionOutcome.Confirmed : SubmissionOutcome.Unconfirmed);
+            // A conversation URL can only appear after the project page accepted the new chat; it is also a confirmation
+            // when the fetch-hook's initial callback was missed.
+            return new StartedChat(conversationId, SubmissionOutcome.Confirmed);
         }
         catch (Exception error) when (error is PlaywrightException or TimeoutException)
         {
@@ -192,8 +194,16 @@ public sealed partial class PlaywrightChatGptClient(
     private async Task<ChatGptException> RejectedSendAsync(ProjectTab tab, int status, CancellationToken cancellationToken)
     {
         await Task.WhenAny(tab.Ended, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken));
-        return IsConversationFull(tab.ErrorBody) is { } full
-            ? full
+        if (IsConversationFull(tab.ErrorBody) is { } responseFull)
+            return responseFull;
+
+        var visibleMessages = await tab.Page.Locator(
+                "[role='alert']:visible, [role='status']:visible, [data-radix-toast-viewport] :visible, " +
+                "[data-above-composer-portal]:visible, form[data-chatgpt-composer] [data-state='error']:visible")
+            .AllInnerTextsAsync();
+        var visible = string.Join('\n', visibleMessages.Where(text => text.Length is > 0 and <= 500));
+        return IsConversationFull(visible) is { } visibleFull
+            ? visibleFull
             : StatusException(status, tab.ErrorBody, "ChatGPT ha rifiutato il prompt");
     }
 
@@ -446,6 +456,24 @@ public sealed partial class PlaywrightChatGptClient(
         if (!string.Equals(current.TrimEnd(), prompt.TrimEnd(), StringComparison.Ordinal))
             throw new ChatGptException(ChatGptFailure.Interface,
                 "Il testo non è stato acquisito dal composer di ChatGPT: non è stato inviato alcun prompt.");
+    }
+
+    private string ProjectPageUrl(string currentUrl, string projectId)
+    {
+        if (Uri.TryCreate(currentUrl, UriKind.Absolute, out var uri)
+            && uri.Scheme is "http" or "https"
+            && uri.Host.Equals(_web.Host, StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && parts[0] == "g"
+                && (parts[1].Equals(projectId, StringComparison.Ordinal)
+                    || parts[1].StartsWith(projectId + "-", StringComparison.Ordinal)))
+            {
+                return _web.Url($"/g/{parts[1]}/project");
+            }
+        }
+
+        return _web.Url(_web.ProjectPagePath.Replace("{projectId}", Uri.EscapeDataString(projectId)));
     }
 
     private string NewChatUrl(CompletionCommand command)
