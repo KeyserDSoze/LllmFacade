@@ -512,6 +512,9 @@ public sealed class PlaywrightChatGptClientTests
         var stale = await userBrowser.NewPageAsync();
         await stale.GotoAsync("data:text/html,<title>Stale LllmFacade page</title>");
         await stale.EvaluateAsync("marker => globalThis.__lllmFacadeOwnedPage = marker", identity.EndpointId.ToString("N") + ":project:old");
+        var legacy = await userBrowser.NewPageAsync();
+        await legacy.GotoAsync("data:text/html,<title>Legacy LllmFacade page</title>");
+        await legacy.EvaluateAsync("() => globalThis.__lfHooked = true");
 
         var browserOptions = new BrowserOptions
         {
@@ -526,6 +529,7 @@ public sealed class PlaywrightChatGptClientTests
 
         await client.RefreshSessionAsync(identity, Token);
         Assert.True(stale.IsClosed);
+        Assert.True(legacy.IsClosed);
         var created = userBrowser.Pages.Count(page => page.Url.StartsWith("https://chatgpt.com", StringComparison.Ordinal));
         Assert.Equal(1, created);
 

@@ -116,8 +116,11 @@ public sealed class BrowserSessionManager(
         {
             try
             {
-                var marker = await page.EvaluateAsync<string?>("() => globalThis.__lllmFacadeOwnedPage || null");
-                if (marker?.StartsWith(prefix, StringComparison.Ordinal) == true)
+                var owned = await page.EvaluateAsync<bool>(
+                    "prefix => (typeof globalThis.__lllmFacadeOwnedPage === 'string' && globalThis.__lllmFacadeOwnedPage.startsWith(prefix)) " +
+                    "|| !!globalThis.__lfHooked || typeof globalThis.__lfStream === 'function'",
+                    prefix);
+                if (owned)
                     await page.CloseAsync();
             }
             catch (PlaywrightException)
