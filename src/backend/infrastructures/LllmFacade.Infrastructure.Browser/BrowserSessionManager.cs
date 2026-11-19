@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using LllmFacade.Business.ChatGpt;
 using LllmFacade.Business.Endpoints;
 using Microsoft.Extensions.Logging;
@@ -81,6 +82,7 @@ public sealed class BrowserSessionManager(
         {
             context = browser.Contexts.FirstOrDefault()
                 ?? throw new InvalidOperationException("Il browser collegato non espone un contesto: aprire Chrome normalmente e collegarsi di nuovo.");
+            await CloseStaleOwnedPagesAsync(context, identity.EndpointId);
             logger.LogInformation("Contesto Chromium collegato a CDP usato per l'endpoint {EndpointId}.", identity.EndpointId);
         }
         else
@@ -105,6 +107,23 @@ public sealed class BrowserSessionManager(
         }
 
         return new EndpointBrowserSession(identity, fingerprint, context, _webOptions, _browserOptions, ownsContext: !attached);
+    }
+
+    private static async Task CloseStaleOwnedPagesAsync(IBrowserContext context, Guid endpointId)
+    {
+        var prefix = endpointId.ToString("N") + ":";
+        foreach (var page in context.Pages.ToArray())
+        {
+            try
+            {
+                var marker = await page.EvaluateAsync<string?>("() => globalThis.__lllmFacadeOwnedPage || null");
+                if (marker?.StartsWith(prefix, StringComparison.Ordinal) == true)
+                    await page.CloseAsync();
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
     }
 
     private async Task<IBrowser> GetBrowserAsync()
@@ -204,9 +223,12 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
     public string? AccessToken { get; set; }
     public bool IsUsable => !_closed;
 
-    internal async Task<IPage> NewOwnedPageAsync()
+    internal async Task<IPage> NewOwnedPageAsync(string? projectKey = null)
     {
         var page = await Context.NewPageAsync();
+        var marker = $"{EndpointId:N}:{projectKey ?? "page"}";
+        await page.AddInitScriptAsync($"globalThis.__lllmFacadeOwnedPage = {JsonSerializer.Serialize(marker)};");
+        await page.EvaluateAsync("marker => globalThis.__lllmFacadeOwnedPage = marker", marker);
         _ownedPages[page] = 0;
         page.Close += (_, _) => _ownedPages.TryRemove(page, out _);
         var timeout = (float)TimeSpan.FromSeconds(_browser.NavigationTimeoutSeconds).TotalMilliseconds;
@@ -245,7 +267,7 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
                 throw new ChatGptException(ChatGptFailure.Busy, "Troppe schede aperte per questo endpoint.");
             try
             {
-                var page = await NewOwnedPageAsync();
+                var page = await NewOwnedPageAsync("project:" + key);
                 var tab = new ProjectTab(page);
                 await page.ExposeFunctionAsync<string, string, bool>("__lfStream", tab.OnSignal);
                 page.Close += (_, _) =>

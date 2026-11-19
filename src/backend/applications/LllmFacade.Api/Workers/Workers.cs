@@ -182,10 +182,36 @@ public sealed class AutopilotProcessor(
     {
         var now = time.GetUtcNow();
         return await db.Projects
-            .Where(p => p.AutopilotEnabled && p.IsActive && p.NextCheckAt != null && p.NextCheckAt <= now && p.Endpoint!.IsEnabled)
-            .OrderBy(p => p.NextCheckAt)
+            .Where(p => p.AutopilotEnabled && p.IsActive && (p.NextCheckAt == null || p.NextCheckAt <= now) && p.Endpoint!.IsEnabled)
+            .OrderBy(p => p.NextCheckAt ?? DateTimeOffset.MinValue)
             .Select(p => p.Id)
             .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>Reconciles every persisted active autopilot immediately after process restart.</summary>
+    public async Task<int> ResumeAfterRestartAsync(CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+        var projects = await db.Projects.Include(p => p.Endpoint)
+            .Where(p => p.AutopilotEnabled && p.IsActive && p.Endpoint!.IsEnabled)
+            .ToListAsync(cancellationToken);
+        foreach (var project in projects)
+        {
+            project.NextCheckAt = now;
+            project.UpdatedAt = now;
+        }
+        if (projects.Count == 0)
+            return 0;
+
+        await db.SaveChangesAsync(cancellationToken);
+        foreach (var project in projects)
+        {
+            hub.PublishStatus(project);
+            await activity.InfoAsync(ActivityCategories.Autopilot,
+                "Autopilot ripreso dopo il riavvio del servizio: controllo immediato dello stato della chat.",
+                project.EndpointId, project.Id, project.Name);
+        }
+        return projects.Count;
     }
 
     public async Task ProcessAsync(Guid projectId, CancellationToken cancellationToken)
@@ -197,25 +223,58 @@ public sealed class AutopilotProcessor(
         var settings = options.Value.ToSettings();
         var before = Snapshot(project);
         var selectionChanged = false;
+        var usedFallback = false;
         try
         {
             var identity = identities.CreateIdentity(endpoint);
-            var conversationId = project.TargetConversationId ?? await LatestConversationAsync(identity, project, cancellationToken);
+            var candidates = await ConversationCandidatesAsync(identity, project, cancellationToken);
+            Exception? detailError = null;
+            ConversationState? state = null;
+            string? conversationId = null;
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var candidate = candidates[index];
+                try
+                {
+                    state = await client.GetConversationStateAsync(identity, candidate, cancellationToken);
+                    conversationId = candidate;
+                    usedFallback = index > 0;
+                    break;
+                }
+                catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    detailError = error;
+                    if (project.TargetConversationId is not null || !CanFallbackToOlderConversation(error) || index == candidates.Count - 1)
+                        break;
+                }
+            }
+
+            if (state is null || conversationId is null)
+            {
+                AutopilotRules.SelectConversation(project, candidates[0], time.GetUtcNow(), settings);
+                throw detailError ?? new InvalidOperationException("Nessuna chat del project è leggibile.");
+            }
+
             selectionChanged = AutopilotRules.SelectConversation(project, conversationId, time.GetUtcNow(), settings);
             if (selectionChanged)
                 hub.PublishStatus(project);
-            var state = await client.GetConversationStateAsync(identity, conversationId, cancellationToken);
             if (state.Phase == ConversationPhase.Finished && state.LastAssistantText is { } answer)
                 hub.SetLiveText(project.Id, answer);
 
             var action = AutopilotRules.Observe(project, state, time.GetUtcNow(), settings);
             if (action == AutopilotAction.Submit)
-                await SubmitAsync(project, identity, conversationId, state, settings, cancellationToken);
-            else if (action == AutopilotAction.Complete)
+            {
                 await client.CloseTabAsync(endpoint.Id, TabKey(project));
+                await SubmitAsync(project, identity, conversationId, state, settings, cancellationToken);
+            }
+            else if (action == AutopilotAction.Complete)
+            {
+                await client.CloseTabAsync(endpoint.Id, TabKey(project));
+            }
         }
         catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            await client.CloseTabAsync(endpoint.Id, TabKey(project));
             AutopilotRules.Failed(project, SessionRefreshProcessor.Describe(error), time.GetUtcNow(), settings);
             logger.LogWarning("Autopilot del project {ProjectId}: {Reason}", project.Id, project.LastError);
         }
@@ -234,6 +293,9 @@ public sealed class AutopilotProcessor(
         if (selectionChanged)
             await activity.InfoAsync(ActivityCategories.Project,
                 "Chat più recente selezionata o aggiornata per il monitoraggio del project.", project.EndpointId, project.Id, project.Name);
+        if (usedFallback)
+            await activity.WarnAsync(ActivityCategories.Project,
+                "La chat più recente non era leggibile: usata la successiva in ordine cronologico.", project.EndpointId, project.Id, project.Name);
         foreach (var entry in AutopilotLogRules.Describe(before, Snapshot(project)))
             await activity.WriteAsync(entry.Level, ActivityCategories.Autopilot, entry.Message, project.EndpointId, project.Id, project.Name);
         await identities.PersistBrowserStateAsync(endpoint, CancellationToken.None);
@@ -295,12 +357,26 @@ public sealed class AutopilotProcessor(
         AutopilotRules.ChatRolledOver(project, started.ConversationId, started.Outcome == SubmissionOutcome.Confirmed, time.GetUtcNow(), settings);
     }
 
-    private async Task<string> LatestConversationAsync(ChatGptIdentity identity, TrackedProject project, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<string>> ConversationCandidatesAsync(
+        ChatGptIdentity identity, TrackedProject project, CancellationToken cancellationToken)
     {
+        if (project.TargetConversationId is { Length: > 0 } target)
+            return [target];
+
         var conversations = await client.ListProjectConversationsAsync(identity, project.ProjectId, cancellationToken);
-        return conversations.OrderByDescending(c => c.UpdatedAt ?? c.CreatedAt ?? DateTimeOffset.MinValue).FirstOrDefault()?.Id
-            ?? throw new InvalidOperationException("Il project non contiene chat: aprirne una su ChatGPT.");
+        var ids = conversations
+            .OrderByDescending(c => c.UpdatedAt ?? c.CreatedAt ?? DateTimeOffset.MinValue)
+            .Select(c => c.Id)
+            .Distinct(StringComparer.Ordinal)
+            .Take(3)
+            .ToList();
+        if (ids.Count == 0)
+            throw new InvalidOperationException("Il project non contiene chat: aprirne una su ChatGPT.");
+        return ids;
     }
+
+    private static bool CanFallbackToOlderConversation(Exception error) =>
+        error is ChatGptException { Failure: ChatGptFailure.Timeout or ChatGptFailure.Upstream or ChatGptFailure.Interface };
 }
 
 public sealed class AutopilotWorker(
@@ -309,6 +385,19 @@ public sealed class AutopilotWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var resumed = await scope.ServiceProvider.GetRequiredService<AutopilotProcessor>()
+                .ResumeAfterRestartAsync(stoppingToken);
+            if (resumed > 0)
+                logger.LogInformation("Ripresi {Count} autopilot persistenti dopo l'avvio del servizio.", resumed);
+        }
+        catch (Exception error) when (!stoppingToken.IsCancellationRequested)
+        {
+            logger.LogError(error, "Ripresa iniziale degli autopilot non riuscita.");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

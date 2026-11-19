@@ -77,6 +77,7 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
                     projectConversationRoute: ProjectRouteAfterConversationLoad),
                 "modern-hidden-legacy" => ModernComposerPage(withSendButton: true, hiddenLegacy: true, fullAfterSend: FullMessageAfterFailedSend,
                     projectConversationRoute: ProjectRouteAfterConversationLoad),
+                "modern-prosemirror-noise" => ModernComposerPage(withSendButton: true, sendAria: "Send", composerNoise: true),
                 "modern-url-only" => ModernComposerPage(withSendButton: true, urlOnly: true),
                 _ => ComposerPage
             });
@@ -148,7 +149,7 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     /// <summary>Structure of the current ChatGPT composer: no #prompt-textarea, a contenteditable textbox, dictation/voice buttons always present.</summary>
     private static string ModernComposerPage(
         bool withSendButton, bool hiddenLegacy = false, string? fullAfterSend = null, bool urlOnly = false,
-        string? projectConversationRoute = null) => $$"""
+        string? projectConversationRoute = null, string sendAria = "Send prompt", bool composerNoise = false) => $$"""
         <!doctype html>
         <html><head><meta charset="utf-8"><title>ChatGPT</title></head>
         <body>
@@ -176,10 +177,12 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
             }
             const editor = document.getElementById('editor');
             async function send() {
-              const prompt = editor.innerText.trim();
+              const prompt = editor.innerText.replace(/\u200b/g, '').trim();
               if (!prompt) return;
               if ({{(urlOnly ? "true" : "false")}}) {
                 history.pushState(null, '', '/g/g-p-alpha/c/conv-url-only');
+                editor.innerHTML = '<p data-empty-paragraph="true"><br></p>';
+                editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
                 return;
               }
               const match = location.pathname.match(/\/c\/([^/]+)$/);
@@ -200,20 +203,29 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
                 document.body.appendChild(alert);
               }
               if (!match && response.ok) history.pushState(null, '', '/g/g-p-alpha/c/conv-from-url');
+              editor.innerHTML = '<p data-empty-paragraph="true"><br></p>';
+              editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
               const answer = document.createElement('div');
               answer.setAttribute('data-message-author-role', 'assistant');
               answer.textContent = 'risposta renderizzata';
               document.getElementById('thread').appendChild(answer);
             }
+            document.querySelector('form[data-chatgpt-composer]').addEventListener('submit', event => {
+              event.preventDefault();
+              send();
+            });
             if ({{(withSendButton ? "true" : "false")}}) {
               // Like the real page, the send button only exists once there is text.
               editor.addEventListener('input', () => {
+                if ({{(composerNoise ? "true" : "false")}} && editor.innerText.trim() && !editor.innerText.includes('\u200b')) {
+                  editor.appendChild(document.createTextNode('\u200b'));
+                }
                 const existing = document.getElementById('send-now');
                 if (editor.innerText.trim() && !existing) {
                   const button = document.createElement('button');
                   button.type = 'submit';
                   button.id = 'send-now';
-                  button.setAttribute('aria-label', 'Send prompt');
+                  button.setAttribute('aria-label', {{JsonSerializer.Serialize(sendAria)}});
                   button.addEventListener('click', event => { event.preventDefault(); send(); });
                   document.getElementById('trailing').appendChild(button);
                 } else if (!editor.innerText.trim() && existing) existing.remove();
@@ -496,6 +508,10 @@ public sealed class PlaywrightChatGptClientTests
         await userPage.GotoAsync("data:text/html,<title>Utente</title><h1>Pagina utente</h1>");
         var fake = new FakeChatGpt();
         await userBrowser.RouteAsync("**/*", fake.HandleForTestAsync);
+        var identity = BrowserHarness.Identity("token-reale");
+        var stale = await userBrowser.NewPageAsync();
+        await stale.GotoAsync("data:text/html,<title>Stale LllmFacade page</title>");
+        await stale.EvaluateAsync("marker => globalThis.__lllmFacadeOwnedPage = marker", identity.EndpointId.ToString("N") + ":project:old");
 
         var browserOptions = new BrowserOptions
         {
@@ -507,9 +523,9 @@ public sealed class PlaywrightChatGptClientTests
         await using var manager = new BrowserSessionManager(
             Options.Create(browserOptions), webOptions, [], NullLogger<BrowserSessionManager>.Instance);
         var client = new PlaywrightChatGptClient(manager, webOptions, Options.Create(browserOptions));
-        var identity = BrowserHarness.Identity("token-reale");
 
         await client.RefreshSessionAsync(identity, Token);
+        Assert.True(stale.IsClosed);
         var created = userBrowser.Pages.Count(page => page.Url.StartsWith("https://chatgpt.com", StringComparison.Ordinal));
         Assert.Equal(1, created);
 
@@ -639,6 +655,7 @@ public sealed class PlaywrightChatGptClientTests
     [InlineData("modern-button")]
     [InlineData("modern-enter")]
     [InlineData("modern-hidden-legacy")]
+    [InlineData("modern-prosemirror-noise")]
     public async Task SubmitPrompt_WorksWithTheCurrentComposerLayout(string layout)
     {
         await using var harness = new BrowserHarness(options => options.NavigationTimeoutSeconds = 10);
@@ -659,6 +676,7 @@ public sealed class PlaywrightChatGptClientTests
     [InlineData("modern-button")]
     [InlineData("modern-enter")]
     [InlineData("modern-hidden-legacy")]
+    [InlineData("modern-prosemirror-noise")]
     public async Task StartProjectChat_WorksWithTheCurrentComposerLayout(string layout)
     {
         await using var harness = new BrowserHarness();

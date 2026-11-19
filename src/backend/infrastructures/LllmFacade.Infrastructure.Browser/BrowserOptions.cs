@@ -49,8 +49,8 @@ public sealed class ChatGptWebOptions
         "[data-composer-markdown][contenteditable='true']:visible, [contenteditable='true'][role='textbox'][aria-label='Ask ChatGPT']:visible";
     public string SendButtonSelector { get; set; } =
         "form[data-chatgpt-composer] button[type='submit']:visible, [data-testid='send-button']:visible, #composer-submit-button:visible, " +
-        "button[data-composer-send]:visible, button[aria-label='Send prompt']:visible, button[aria-label='Send message']:visible, " +
-        "button[aria-label='Invia prompt']:visible, button[aria-label='Invia messaggio']:visible";
+        "button[data-composer-send]:visible, button[aria-label='Send']:visible, button[aria-label='Send prompt']:visible, " +
+        "button[aria-label='Send message']:visible, button[aria-label='Invia prompt']:visible, button[aria-label='Invia messaggio']:visible";
     public string StopButtonSelector { get; set; } = "[data-testid='stop-button']";
     public string AssistantMessageSelector { get; set; } = "[data-message-author-role='assistant']";
     public string LoginSelector { get; set; } = "[data-testid='login-button']";

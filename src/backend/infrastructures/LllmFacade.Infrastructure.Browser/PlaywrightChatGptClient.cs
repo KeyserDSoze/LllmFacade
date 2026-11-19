@@ -120,7 +120,7 @@ public sealed partial class PlaywrightChatGptClient(
             await TypePromptAsync(tab.Page, prompt);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
             sendAttempted = true;
-            await ClickSendAsync(tab.Page);
+            await ClickSendAsync(tab.Page, tab.Started);
 
             var completed = await Task.WhenAny(tab.Started, Task.Delay(TimeSpan.FromSeconds(_browser.ConfirmationTimeoutSeconds), cancellationToken));
             cancellationToken.ThrowIfCancellationRequested();
@@ -160,7 +160,7 @@ public sealed partial class PlaywrightChatGptClient(
             await TypePromptAsync(tab.Page, prompt);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
             sendAttempted = true;
-            await ClickSendAsync(tab.Page);
+            await ClickSendAsync(tab.Page, tab.Started);
 
             var completed = await Task.WhenAny(tab.Started, Task.Delay(TimeSpan.FromSeconds(_browser.ConfirmationTimeoutSeconds), cancellationToken));
             cancellationToken.ThrowIfCancellationRequested();
@@ -263,8 +263,17 @@ public sealed partial class PlaywrightChatGptClient(
         }
     }
 
-    public Task CloseTabAsync(Guid endpointId, string tabKey) =>
-        sessions.Find(endpointId)?.CloseTabAsync(tabKey) ?? Task.CompletedTask;
+    public async Task CloseTabAsync(Guid endpointId, string tabKey)
+    {
+        try
+        {
+            await (sessions.Find(endpointId)?.CloseTabAsync(tabKey) ?? Task.CompletedTask);
+        }
+        catch (PlaywrightException)
+        {
+        }
+    }
+
 
     public Task ReleaseAsync(Guid endpointId) => sessions.ReleaseAsync(endpointId);
 
@@ -412,10 +421,11 @@ public sealed partial class PlaywrightChatGptClient(
             throw new ChatGptException(ChatGptFailure.ConversationFull, "La chat ha raggiunto il limite di lunghezza di ChatGPT.");
     }
 
-    private async Task ClickSendAsync(IPage page)
+    private async Task ClickSendAsync(IPage page, Task<int>? requestStarted = null)
     {
         var box = page.Locator(_web.PromptSelector).First;
         var send = page.Locator(_web.SendButtonSelector).First;
+        var previousUrl = page.Url;
         try
         {
             // ChatGPT replaces the voice control with a submit control after its editor state updates.
@@ -425,16 +435,43 @@ public sealed partial class PlaywrightChatGptClient(
                 Timeout = 2_000
             });
             if (await send.IsEnabledAsync())
-            {
                 await send.ClickAsync();
+            if (await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
                 return;
-            }
         }
         catch (TimeoutException)
         {
         }
 
+        await box.EvaluateAsync("element => { const form = element.closest('form'); if (form) { const button = form.querySelector('button[type=submit]:not(:disabled)'); form.requestSubmit(button || undefined); } }");
+        if (await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
+            return;
+
         await box.PressAsync("Enter");
+        if (!await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
+            throw new ChatGptException(ChatGptFailure.Interface,
+                "Il composer contiene il testo, ma ChatGPT non ha accettato né il click né il submit nativo: controllare il form.");
+    }
+
+    private static async Task<bool> ComposerAcceptedAsync(
+        IPage page, ILocator box, string previousUrl, Task<int>? requestStarted)
+    {
+        var stop = page.Locator(
+            "button[aria-label='Stop']:visible, button[aria-label='Stop generating']:visible, [data-testid='stop-button']:visible");
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        do
+        {
+            if (requestStarted?.IsCompletedSuccessfully == true || await stop.IsVisibleAsync())
+                return true;
+            if (page.Url != previousUrl && ConversationUrl().IsMatch(page.Url))
+                return true;
+            if (!await box.IsVisibleAsync() || string.IsNullOrWhiteSpace(
+                    NormalizeComposerText(await box.InnerTextAsync())))
+                return true;
+            await Task.Delay(100);
+        }
+        while (DateTime.UtcNow < deadline);
+        return false;
     }
 
     /// <summary>Types in the visible composer so the web app receives the same editor events as a user.</summary>
@@ -448,15 +485,23 @@ public sealed partial class PlaywrightChatGptClient(
         await page.Keyboard.InsertTextAsync(prompt);
 
         var current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
-        if (!string.Equals(current.TrimEnd(), prompt.TrimEnd(), StringComparison.Ordinal))
+        if (!ComposerContains(current, prompt))
         {
             await box.FillAsync(prompt);
             current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
         }
-        if (!string.Equals(current.TrimEnd(), prompt.TrimEnd(), StringComparison.Ordinal))
+        if (!ComposerContains(current, prompt))
             throw new ChatGptException(ChatGptFailure.Interface,
                 "Il testo non è stato acquisito dal composer di ChatGPT: non è stato inviato alcun prompt.");
     }
+
+    private static bool ComposerContains(string current, string expected) =>
+        string.Equals(NormalizeComposerText(current), NormalizeComposerText(expected), StringComparison.Ordinal)
+        || NormalizeComposerText(current).Contains(NormalizeComposerText(expected), StringComparison.Ordinal);
+
+    private static string NormalizeComposerText(string text) =>
+        Regex.Replace((text ?? string.Empty).Replace("\u200b", string.Empty).Replace('\u00a0', ' ')
+            .Replace("\r\n", "\n").Replace('\r', '\n'), "\\s+", " ").Trim();
 
     private string ProjectPageUrl(string currentUrl, string projectId)
     {

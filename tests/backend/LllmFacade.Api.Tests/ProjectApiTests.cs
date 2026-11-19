@@ -4,6 +4,7 @@ using LllmFacade.Api.Services;
 using LllmFacade.Api.Workers;
 using LllmFacade.Business.ChatGpt;
 using LllmFacade.Domain;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 using static LllmFacade.Api.Tests.Api;
 
@@ -109,6 +110,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
         factory.ChatGpt.State = id => new ConversationState(id, "n1", ConversationPhase.Finished, "Fatto", DateTimeOffset.UtcNow);
         await ProcessAsync(project.Id);
         var afterFirst = await GetAsync(admin, project.Id);
+        Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
         Assert.Equal(submissions + 1, factory.ChatGpt.Submissions.Count);
         var (target, prompt) = factory.ChatGpt.Submissions.Last();
         Assert.Equal("conv-new", target.ConversationId);
@@ -153,9 +155,8 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
                 new("conv-older", "Vecchia", DateTimeOffset.UtcNow.AddHours(-2), DateTimeOffset.UtcNow.AddHours(-1)),
                 new("conv-newest", "Nuovissima", DateTimeOffset.UtcNow.AddMinutes(-2), DateTimeOffset.UtcNow.AddMinutes(-1))
             ];
-            factory.ChatGpt.State = id => id == "conv-newest"
-                ? throw new ChatGptException(ChatGptFailure.Timeout, "Timeout nel dettaglio della chat")
-                : new ConversationState(id, "n1", ConversationPhase.Generating, null, DateTimeOffset.UtcNow);
+            factory.ChatGpt.State = _ =>
+                throw new ChatGptException(ChatGptFailure.Timeout, "Timeout nel dettaglio della chat");
 
             await ProcessAsync(project.Id);
 
@@ -203,6 +204,78 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
     }
 
     [Fact]
+    public async Task Autopilot_UsesTheNextRecentConversationWhenTheNewestDetailFails()
+    {
+        var (admin, endpointId) = await SetupAsync();
+        var project = await TrackAsync(admin, endpointId, "g-p-alpha", "Alpha");
+        (await admin.PostAsJsonAsync($"/api/projects/{project.Id}/autopilot/start",
+            new { continuationPrompt = "Continua", targetConversationId = (string?)null, maxContinuations = (int?)null }, Token)).EnsureSuccessStatusCode();
+        var originalConversations = factory.ChatGpt.Conversations;
+        var originalState = factory.ChatGpt.State;
+        try
+        {
+            factory.ChatGpt.Conversations =
+            [
+                new("conv-newest", "Nuovissima", DateTimeOffset.UtcNow.AddMinutes(-2), DateTimeOffset.UtcNow.AddMinutes(-1)),
+                new("conv-previous", "Precedente", DateTimeOffset.UtcNow.AddHours(-2), DateTimeOffset.UtcNow.AddMinutes(-30))
+            ];
+            factory.ChatGpt.State = id => id == "conv-newest"
+                ? throw new ChatGptException(ChatGptFailure.Timeout, "Timeout nella chat più recente")
+                : new ConversationState(id, "n-prev", ConversationPhase.Generating, null, DateTimeOffset.UtcNow);
+
+            await ProcessAsync(project.Id);
+
+            var after = await GetAsync(admin, project.Id);
+            Assert.Equal("conv-previous", after.CurrentConversationId);
+            Assert.Equal(AutopilotStatus.Generating, after.Status);
+            Assert.Equal(0, after.ConsecutiveFailures);
+            Assert.Null(after.LastError);
+            var logs = await (await admin.GetAsync($"/api/logs?projectId={project.Id}&category=project", Token)).JsonAsync();
+            Assert.Contains(logs.GetProperty("items").EnumerateArray(),
+                entry => entry.GetProperty("message").GetString()!.Contains("successiva in ordine cronologico"));
+        }
+        finally
+        {
+            factory.ChatGpt.Conversations = originalConversations;
+            factory.ChatGpt.State = originalState;
+        }
+    }
+
+    [Fact]
+    public async Task ResumeAfterRestart_ImmediatelySchedulesActiveAutopilotsWithoutResettingTheirState()
+    {
+        var (admin, endpointId) = await SetupAsync();
+        var project = await TrackAsync(admin, endpointId, "g-p-alpha", "Alpha");
+        (await admin.PostAsJsonAsync($"/api/projects/{project.Id}/autopilot/start",
+            new { continuationPrompt = "Continua", targetConversationId = "conv-old", maxContinuations = 8 }, Token)).EnsureSuccessStatusCode();
+        await factory.WithDbAsync(async db =>
+        {
+            var stored = await db.Projects.SingleAsync(p => p.Id == project.Id, Token);
+            stored.Status = AutopilotStatus.Generating;
+            stored.NextCheckAt = DateTimeOffset.UtcNow.AddHours(1);
+            stored.CurrentConversationId = "conv-old";
+            stored.PendingAfterNodeId = "node-sent";
+            stored.ContinuationsSent = 3;
+            stored.LastError = "ultimo errore mantenuto finché il controllo successivo non recupera";
+            await db.SaveChangesAsync(Token);
+        });
+        var before = DateTimeOffset.UtcNow;
+
+        await factory.WithServiceAsync<AutopilotProcessor>(p => p.ResumeAfterRestartAsync(Token));
+
+        var after = await GetAsync(admin, project.Id);
+        Assert.InRange(after.NextCheckAt!.Value, before.AddSeconds(-1), DateTimeOffset.UtcNow.AddSeconds(5));
+        Assert.Equal(AutopilotStatus.Generating, after.Status);
+        Assert.Equal("conv-old", after.CurrentConversationId);
+        Assert.Equal(3, after.ContinuationsSent);
+        Assert.Equal("ultimo errore mantenuto finché il controllo successivo non recupera", after.LastError);
+        Assert.True(after.AutopilotEnabled);
+        IReadOnlyList<Guid> due = [];
+        await factory.WithServiceAsync<AutopilotProcessor>(async p => due = await p.FindDueAsync(Token));
+        Assert.Contains(project.Id, due);
+    }
+
+    [Fact]
     public async Task Autopilot_RetriesEveryMinuteWhenTheConnectionDrops()
     {
         var (admin, endpointId) = await SetupAsync();
@@ -216,6 +289,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
             await ProcessAsync(project.Id);
 
             var failed = await GetAsync(admin, project.Id);
+            Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
             Assert.Equal(AutopilotStatus.WaitingRetry, failed.Status);
             Assert.Equal("ChatGPT non raggiungibile.", failed.LastError);
             Assert.Equal(1, failed.ConsecutiveFailures);
