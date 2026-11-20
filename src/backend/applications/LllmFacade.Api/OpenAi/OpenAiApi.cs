@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using LllmFacade.Api.Services;
+using LllmFacade.Api.Workers;
 using LllmFacade.Business.Chat;
 using LllmFacade.Business.ChatGpt;
 using LllmFacade.Business.Security;
@@ -35,7 +36,7 @@ public static class OpenAiApi
 
     private static async Task ChatCompletionsAsync(
         HttpContext http, LllmFacadeDbContext db, EndpointIdentityService identities, IChatGptClient client, TimeProvider time,
-        ActivityLog log, ActiveRequests active)
+        ActivityLog log, ActiveRequests active, AutopilotProcessor autopilot, ILoggerFactory loggerFactory)
     {
         if (await AuthenticateAsync(http, db) is not { } endpoint)
             return;
@@ -76,6 +77,30 @@ public static class OpenAiApi
         }
         finally
         {
+            if (trace.Error is { Failure: ChatGptFailure.RateLimited })
+            {
+                try
+                {
+                    await autopilot.CooldownAllAfterRateLimitAsync(null, trace.Error.Message, CancellationToken.None);
+                }
+                catch (Exception cooldownError)
+                {
+                    loggerFactory.CreateLogger("OpenAiApi")
+                        .LogError(cooldownError, "Il cooldown globale dopo il 429 di una richiesta OpenAI non è stato applicato.");
+                }
+            }
+            else if (trace.Error is { Failure: ChatGptFailure.Blocked })
+            {
+                try
+                {
+                    await autopilot.PauseEndpointAfterBlockedAsync(endpoint.Id, trace.Error.Message, CancellationToken.None);
+                }
+                catch (Exception blockedError)
+                {
+                    loggerFactory.CreateLogger("OpenAiApi")
+                        .LogError(blockedError, "La pausa globale dopo la verifica ChatGPT non è stata applicata.");
+                }
+            }
             await identities.PersistBrowserStateAsync(endpoint, CancellationToken.None);
             var mode = request.Stream == true ? "streaming" : "risposta unica";
             var seconds = time.GetElapsedTime(started).TotalSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);

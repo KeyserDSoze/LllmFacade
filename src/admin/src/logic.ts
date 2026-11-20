@@ -189,14 +189,39 @@ const statusLabels: Record<AutopilotStatus, string> = {
   Idle: 'Inattivo',
   Monitoring: 'In osservazione',
   Generating: 'ChatGPT sta lavorando',
+  CoolingDown: 'Pausa del thread prima del prossimo invio',
   Submitting: 'Invio del prompt in corso',
   WaitingRetry: 'Connessione persa: nuovo tentativo tra poco',
+  VerificationRequired: 'Completa la verifica ChatGPT nel browser',
   Completed: 'Completato',
   Stopped: 'Fermato'
 };
 
 export function statusLabel(status: AutopilotStatus): string {
   return statusLabels[status] ?? status;
+}
+
+export type RateLimitState = 'cooldown' | 'queued' | null;
+
+export function rateLimitState(
+  project: Pick<TrackedProject, 'autopilotEnabled' | 'status' | 'rateLimitUntil'>,
+  now = Date.now()
+): RateLimitState {
+  if (!project.autopilotEnabled || project.status !== 'WaitingRetry' || !project.rateLimitUntil)
+    return null;
+  const until = Date.parse(project.rateLimitUntil);
+  return Number.isFinite(until) && until > now ? 'cooldown' : 'queued';
+}
+
+export function projectStatusLabel(
+  project: Pick<TrackedProject, 'autopilotEnabled' | 'batchPaused' | 'status' | 'rateLimitUntil'>,
+  now = Date.now()
+): string {
+  if (project.batchPaused) return 'In pausa dal comando globale';
+  const rateLimit = rateLimitState(project, now);
+  if (rateLimit === 'cooldown') return 'Pausa ChatGPT per troppe richieste';
+  if (rateLimit === 'queued') return 'In coda dopo la pausa ChatGPT';
+  return statusLabel(project.status);
 }
 
 export function formatDateTime(value: string | null): string {
@@ -226,11 +251,13 @@ export function curlExample(origin: string, apiKey: string, model: string): stri
 export type DotKind = 'working' | 'pending' | 'error' | 'done' | 'idle';
 
 /** Green = ChatGPT is writing; amber = waiting (next check or send confirmation); red = connection/error; blue = completed. */
-export function dotKind(project: Pick<TrackedProject, 'status' | 'autopilotEnabled' | 'lastError'>): DotKind {
+export function dotKind(project: Pick<TrackedProject, 'status' | 'autopilotEnabled' | 'lastError' | 'rateLimitUntil'>): DotKind {
+  if (project.autopilotEnabled && project.rateLimitUntil) return 'pending';
   if (project.status === 'WaitingRetry') return 'error';
+  if (project.status === 'VerificationRequired') return 'pending';
   if (project.autopilotEnabled && project.lastError) return 'error';
   if (project.status === 'Generating') return 'working';
-  if (project.status === 'Monitoring' || project.status === 'Submitting') return 'pending';
+  if (project.status === 'Monitoring' || project.status === 'CoolingDown' || project.status === 'Submitting') return 'pending';
   if (project.status === 'Completed') return 'done';
   return 'idle';
 }

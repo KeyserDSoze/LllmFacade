@@ -225,6 +225,9 @@ namespace LllmFacade.Infrastructure.Postgres.Migrations
                     b.Property<bool>("AutopilotEnabled")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("BatchPaused")
+                        .HasColumnType("boolean");
+
                     b.Property<int>("ChatsCreated")
                         .HasColumnType("integer");
 
@@ -260,6 +263,9 @@ namespace LllmFacade.Infrastructure.Postgres.Migrations
                     b.Property<string>("LastError")
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset?>("LastRateLimitAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int?>("MaxContinuations")
                         .HasColumnType("integer");
 
@@ -283,6 +289,9 @@ namespace LllmFacade.Infrastructure.Postgres.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset?>("RateLimitUntil")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Status")
                         .IsRequired()

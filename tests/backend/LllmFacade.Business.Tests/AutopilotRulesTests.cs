@@ -133,6 +133,36 @@ public sealed class AutopilotRulesTests
     }
 
     [Fact]
+    public void Observe_PausesOnlyTheCompletedThreadForTenMinutesBeforeTheNextPrompt()
+    {
+        var settings = Settings with { CompletionPause = TimeSpan.FromMinutes(10) };
+        var project = Running(sent: 1);
+        project.Status = AutopilotStatus.Generating;
+        project.PendingAfterNodeId = "n1";
+        project.LastContinuationAt = Now.AddMinutes(-3);
+        var other = Running(sent: 4);
+        other.Status = AutopilotStatus.Generating;
+        var otherBefore = other.NextCheckAt;
+
+        var first = AutopilotRules.Observe(project, State(ConversationPhase.Finished, "n2"), Now, settings);
+
+        Assert.Equal(AutopilotAction.Wait, first);
+        Assert.Equal(AutopilotStatus.CoolingDown, project.Status);
+        Assert.Equal(Now.AddMinutes(10), project.NextCheckAt);
+        Assert.Null(project.PendingAfterNodeId);
+        Assert.Equal(1, project.ContinuationsSent);
+        Assert.Equal(AutopilotStatus.Generating, other.Status);
+        Assert.Equal(otherBefore, other.NextCheckAt);
+
+        var second = AutopilotRules.Observe(
+            project, State(ConversationPhase.Finished, "n2"), Now.AddMinutes(10), settings);
+
+        Assert.Equal(AutopilotAction.Submit, second);
+        Assert.Equal(1, project.ContinuationsSent);
+        Assert.Equal(AutopilotStatus.Submitting, project.Status);
+    }
+
+    [Fact]
     public void Observe_CompletesWhenLimitReached()
     {
         var project = Running(sent: 2, max: 2);
@@ -168,6 +198,38 @@ public sealed class AutopilotRulesTests
         Assert.Equal(1, project.ContinuationsSent);
         Assert.Equal(AutopilotStatus.Submitting, project.Status);
         Assert.NotNull(project.LastError);
+    }
+
+    [Fact]
+    public void Blocked_RequestsManualVerificationAndWaitsThirtyMinutes()
+    {
+        var project = Running();
+        var challengeCooldown = TimeSpan.FromMinutes(30);
+
+        var changed = AutopilotRules.Blocked(project,
+            "ChatGPT richiede una verifica di sicurezza nella pagina.", Now, challengeCooldown);
+
+        Assert.True(changed);
+        Assert.True(project.AutopilotEnabled);
+        Assert.Equal(AutopilotStatus.VerificationRequired, project.Status);
+        Assert.Equal(Now.AddMinutes(30), project.NextCheckAt);
+        Assert.Null(project.RateLimitUntil);
+        Assert.Equal(1, project.ConsecutiveFailures);
+        Assert.Contains("verifica", project.LastError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Blocked_DoesNotExtendAnExistingVerificationPause()
+    {
+        var project = Running();
+        AutopilotRules.Blocked(project, "Verifica 1", Now, TimeSpan.FromMinutes(30));
+        var firstCheck = project.NextCheckAt;
+
+        var changed = AutopilotRules.Blocked(project, "Verifica 2", Now.AddSeconds(20), TimeSpan.FromMinutes(30));
+
+        Assert.False(changed);
+        Assert.Equal(firstCheck, project.NextCheckAt);
+        Assert.Equal(1, project.ConsecutiveFailures);
     }
 
     [Fact]

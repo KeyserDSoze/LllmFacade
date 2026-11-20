@@ -24,7 +24,7 @@ public sealed class PlaywrightInstallation
     }
 }
 
-public sealed record RecordedRequest(string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string? Body);
+public sealed record RecordedRequest(DateTimeOffset At, string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string? Body);
 
 /// <summary>Routes every request of the browser context to an in-process imitation of chatgpt.com.</summary>
 public sealed class FakeChatGpt : IBrowserContextConfigurator
@@ -38,7 +38,15 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     public HashSet<string> FullConversations { get; } = [];
     public string? FullMessageAfterFailedSend { get; set; }
     public string? ProjectRouteAfterConversationLoad { get; set; }
+    public int HiddenComposerTextReads { get; set; }
+    public int SendButtonDelayMilliseconds { get; set; }
+    public int PageLoadResourceDelayMilliseconds { get; set; }
+    /// <summary>The project composer turns URLs into link chips whose icon adds a line break to innerText.</summary>
+    public bool RichLinkComposer { get; set; }
     public int ConversationStatus { get; set; } = 200;
+    public int ConversationStateDelayMilliseconds { get; set; }
+    public int ConversationStateStatus { get; set; } = 200;
+    public string? ConversationStateMitigated { get; set; }
     public string ConversationBody { get; set; } = ChatGptStreamParserTests.DeltaStream;
     public string ConversationStateJson { get; set; } = ChatGptResponsesTests.Conversation("assistant", "finished_successfully");
 
@@ -60,23 +68,31 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
             return;
         }
 
-        Requests.Enqueue(new RecordedRequest(request.Method, url.PathAndQuery, await request.AllHeadersAsync(), request.PostData));
+        Requests.Enqueue(new RecordedRequest(DateTimeOffset.UtcNow, request.Method, url.PathAndQuery,
+            await request.AllHeadersAsync(), request.PostData));
         var path = url.AbsolutePath;
         var query = System.Web.HttpUtility.ParseQueryString(url.Query);
-        if (request.Method == "GET" && path.StartsWith("/c/", StringComparison.Ordinal) && FullConversations.Contains(path[3..]))
+        var conversationRoute = System.Text.RegularExpressions.Regex.Match(path, "/c/([A-Za-z0-9-]{1,64})(?:/|$)");
+        if (request.Method == "GET" && conversationRoute.Success && FullConversations.Contains(conversationRoute.Groups[1].Value))
         {
             await HtmlAsync(route, FullPage);
         }
-        else if (request.Method == "GET" && (path == "/" || path.StartsWith("/c/", StringComparison.Ordinal) || path.EndsWith("/project", StringComparison.Ordinal)))
+        else if (request.Method == "GET" && (path == "/" || conversationRoute.Success || path.EndsWith("/project", StringComparison.Ordinal)))
         {
             await HtmlAsync(route, LoggedOut ? LoginPage : Layout switch
             {
                 "modern-button" => ModernComposerPage(withSendButton: true, fullAfterSend: FullMessageAfterFailedSend,
-                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                    projectConversationRoute: ProjectRouteAfterConversationLoad, hiddenTextReads: HiddenComposerTextReads,
+                    sendButtonDelayMilliseconds: SendButtonDelayMilliseconds),
                 "modern-enter" => ModernComposerPage(withSendButton: false, fullAfterSend: FullMessageAfterFailedSend,
-                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                    projectConversationRoute: ProjectRouteAfterConversationLoad, hiddenTextReads: HiddenComposerTextReads,
+                    sendButtonDelayMilliseconds: SendButtonDelayMilliseconds),
                 "modern-hidden-legacy" => ModernComposerPage(withSendButton: true, hiddenLegacy: true, fullAfterSend: FullMessageAfterFailedSend,
-                    projectConversationRoute: ProjectRouteAfterConversationLoad),
+                    projectConversationRoute: ProjectRouteAfterConversationLoad, hiddenTextReads: HiddenComposerTextReads,
+                    sendButtonDelayMilliseconds: SendButtonDelayMilliseconds),
+                "modern-project-home" => ModernComposerPage(withSendButton: true, fullAfterSend: FullMessageAfterFailedSend,
+                    hiddenTextReads: HiddenComposerTextReads, sendButtonDelayMilliseconds: SendButtonDelayMilliseconds,
+                    projectHome: true, richLinks: RichLinkComposer),
                 "modern-prosemirror-noise" => ModernComposerPage(withSendButton: true, sendAria: "Send", composerNoise: true),
                 "modern-url-only" => ModernComposerPage(withSendButton: true, urlOnly: true),
                 _ => ComposerPage
@@ -117,6 +133,22 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
         }
         else if (request.Method == "GET" && path.StartsWith("/backend-api/conversation/", StringComparison.Ordinal))
         {
+            if (ConversationStateDelayMilliseconds > 0)
+                await Task.Delay(ConversationStateDelayMilliseconds);
+            if (ConversationStateStatus >= 400)
+            {
+                var headers = new Dictionary<string, string>();
+                if (ConversationStateMitigated is { } mitigated)
+                    headers["cf-mitigated"] = mitigated;
+                await route.FulfillAsync(new RouteFulfillOptions
+                {
+                    Status = ConversationStateStatus,
+                    ContentType = "text/html; charset=utf-8",
+                    Headers = headers,
+                    Body = "<title>Just a moment...</title><body>Verify you are human</body>"
+                });
+                return;
+            }
             await JsonAsync(route, ConversationStateJson);
         }
         else if (request.Method == "POST" && path == "/backend-api/f/conversation")
@@ -128,14 +160,24 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
                 Body = ConversationBody
             });
         }
+        else if (request.Method == "GET" && path == "/__lf-test-load.png")
+        {
+            if (PageLoadResourceDelayMilliseconds > 0)
+                await Task.Delay(PageLoadResourceDelayMilliseconds);
+            await route.FulfillAsync(new RouteFulfillOptions { Status = 204 });
+        }
         else
         {
             await route.FulfillAsync(new RouteFulfillOptions { Status = 404, Body = "not found" });
         }
     }
 
-    private static Task HtmlAsync(IRoute route, string html) =>
-        route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "text/html; charset=utf-8", Body = html });
+    private Task HtmlAsync(IRoute route, string html)
+    {
+        if (PageLoadResourceDelayMilliseconds > 0)
+            html = html.Replace("</body>", "<img src='/__lf-test-load.png' style='display:none'></body>", StringComparison.Ordinal);
+        return route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "text/html; charset=utf-8", Body = html });
+    }
 
     private static Task JsonAsync(IRoute route, string json) =>
         route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = json });
@@ -149,18 +191,20 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
     /// <summary>Structure of the current ChatGPT composer: no #prompt-textarea, a contenteditable textbox, dictation/voice buttons always present.</summary>
     private static string ModernComposerPage(
         bool withSendButton, bool hiddenLegacy = false, string? fullAfterSend = null, bool urlOnly = false,
-        string? projectConversationRoute = null, string sendAria = "Send prompt", bool composerNoise = false) => $$"""
+        string? projectConversationRoute = null, string sendAria = "Send prompt", bool composerNoise = false,
+        int hiddenTextReads = 0, int sendButtonDelayMilliseconds = 0, bool projectHome = false,
+        bool richLinks = false) => $$"""
         <!doctype html>
         <html><head><meta charset="utf-8"><title>ChatGPT</title></head>
         <body>
           {{(hiddenLegacy ? "<div id=\"prompt-textarea\" contenteditable=\"true\" style=\"display:none\"></div>" : string.Empty)}}
           <main id="thread"></main>
-          <form data-composer-placement="thread" data-chatgpt-composer="">
+          <form data-composer-placement="{{(projectHome ? "home" : "thread")}}" data-chatgpt-composer="" {{(projectHome ? "data-thread-find-composer='true'" : string.Empty)}}>
             <fieldset>
               <div data-composer-layout="single-line">
                 <button type="button" aria-label="Add files and more">+</button>
-                <div contenteditable="true" aria-multiline="true" dir="auto" role="textbox" tabindex="0" data-composer-markdown="" aria-label="Ask ChatGPT" id="editor">
-                  <p data-empty-paragraph="true" data-placeholder="Ask ChatGPT"><br></p>
+                <div contenteditable="true" aria-multiline="true" dir="auto" role="textbox" tabindex="0" data-composer-markdown="" aria-label="{{(projectHome ? "New chat in Alpha" : "Ask ChatGPT")}}" id="editor">
+                  <p data-empty-paragraph="true" data-placeholder="{{(projectHome ? "New chat in Alpha" : "Ask ChatGPT")}}"><br></p>
                 </div>
                 <span id="trailing">
                   <button type="button" data-dictation-button="idle" aria-label="Dictate">mic</button>
@@ -171,14 +215,36 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
           </form>
           <script>
             document.cookie = 'page-visit=1; path=/; secure';
+            window.addEventListener('load', () => {
+              globalThis.__lfTestLoadAt = performance.now();
+            }, { once: true });
             const projectConversationRoute = {{JsonSerializer.Serialize(projectConversationRoute)}};
             if (projectConversationRoute && /^\/c\//.test(location.pathname)) {
               history.replaceState(null, '', projectConversationRoute);
             }
             const editor = document.getElementById('editor');
+            let hiddenTextReads = {{hiddenTextReads}};
+            if (hiddenTextReads > 0) {
+              const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText');
+              Object.defineProperty(editor, 'innerText', {
+                configurable: true,
+                get() {
+                  if (hiddenTextReads-- > 0) return '';
+                  return descriptor.get.call(this);
+                },
+                set(value) { descriptor.set.call(this, value); }
+              });
+            }
+            editor.addEventListener('input', () => {
+              if ((editor.textContent || '').trim()) {
+                globalThis.__lfTestTypedAt = performance.now();
+                globalThis.__lfTestReadyStateWhenTyped = document.readyState;
+              }
+            });
             async function send() {
-              const prompt = editor.innerText.replace(/\u200b/g, '').trim();
+              const prompt = (editor.textContent || '').replace(/\u200b/g, '').trim();
               if (!prompt) return;
+              globalThis.__lfTestSendAt = performance.now();
               if ({{(urlOnly ? "true" : "false")}}) {
                 history.pushState(null, '', '/g/g-p-alpha/c/conv-url-only');
                 editor.innerHTML = '<p data-empty-paragraph="true"><br></p>';
@@ -210,29 +276,73 @@ public sealed class FakeChatGpt : IBrowserContextConfigurator
               answer.textContent = 'risposta renderizzata';
               document.getElementById('thread').appendChild(answer);
             }
+            if ({{(richLinks ? "true" : "false")}}) {
+              // Like the project composer: each URL becomes a chip whose non-editable icon breaks the line in innerText.
+              editor.addEventListener('input', () => {
+                for (;;) {
+                  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                  let found = null;
+                  while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    if (node.parentElement && node.parentElement.closest('[data-rich-link]')) continue;
+                    const match = /https:\/\/[^\s)]+/.exec(node.data);
+                    if (match) { found = { node, match }; break; }
+                  }
+                  if (!found) return;
+                  const url = found.node.splitText(found.match.index);
+                  url.splitText(found.match[0].length);
+                  const chip = document.createElement('span');
+                  chip.setAttribute('data-rich-link', '');
+                  const icon = document.createElement('span');
+                  icon.setAttribute('contenteditable', 'false');
+                  icon.style.display = 'block';
+                  icon.style.width = '16px';
+                  icon.style.height = '16px';
+                  chip.appendChild(icon);
+                  url.parentNode.insertBefore(chip, url);
+                  chip.appendChild(url);
+                }
+              });
+            }
+            const withSendButton = {{(withSendButton ? "true" : "false")}};
+            let sendButtonPending = false;
             document.querySelector('form[data-chatgpt-composer]').addEventListener('submit', event => {
               event.preventDefault();
-              send();
+              if (!withSendButton || document.getElementById('send-now')) send();
             });
-            if ({{(withSendButton ? "true" : "false")}}) {
-              // Like the real page, the send button only exists once there is text.
+            if (withSendButton) {
+              // Like the real page, the send button is created asynchronously once the editor has text.
               editor.addEventListener('input', () => {
-                if ({{(composerNoise ? "true" : "false")}} && editor.innerText.trim() && !editor.innerText.includes('\u200b')) {
+                const hasEditorText = Boolean((editor.textContent || '').trim());
+                if ({{(composerNoise ? "true" : "false")}} && hasEditorText && !editor.textContent.includes('\u200b')) {
                   editor.appendChild(document.createTextNode('\u200b'));
                 }
                 const existing = document.getElementById('send-now');
-                if (editor.innerText.trim() && !existing) {
-                  const button = document.createElement('button');
-                  button.type = 'submit';
-                  button.id = 'send-now';
-                  button.setAttribute('aria-label', {{JsonSerializer.Serialize(sendAria)}});
-                  button.addEventListener('click', event => { event.preventDefault(); send(); });
-                  document.getElementById('trailing').appendChild(button);
+                if (hasEditorText && !existing && !sendButtonPending) {
+                  sendButtonPending = true;
+                  setTimeout(() => {
+                    sendButtonPending = false;
+                    if (!(editor.textContent || '').trim() || document.getElementById('send-now')) return;
+                    const button = document.createElement('button');
+                    button.type = 'submit';
+                    button.id = 'send-now';
+                    button.setAttribute('aria-label', {{JsonSerializer.Serialize(sendAria)}});
+                    button.addEventListener('click', event => { event.preventDefault(); send(); });
+                    document.getElementById('trailing').appendChild(button);
+                  }, {{sendButtonDelayMilliseconds}});
                 } else if (!editor.innerText.trim() && existing) existing.remove();
               });
             } else {
               editor.addEventListener('keydown', event => {
                 if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
+              });
+            }
+            if (withSendButton && {{(projectHome ? "true" : "false")}}) {
+              editor.addEventListener('keydown', event => {
+                if (event.key === 'Enter' && !event.shiftKey && (editor.textContent || '').trim()) {
+                  event.preventDefault();
+                  send();
+                }
               });
             }
           </script>
@@ -287,7 +397,15 @@ public sealed class BrowserHarness : IAsyncDisposable
 
     public BrowserHarness(Action<BrowserOptions>? configure = null)
     {
-        var browserOptions = new BrowserOptions { NavigationTimeoutSeconds = 10, ConfirmationTimeoutSeconds = 10, CompletionTimeoutMinutes = 1 };
+        var browserOptions = new BrowserOptions
+        {
+            NavigationTimeoutSeconds = 10,
+            ConfirmationTimeoutSeconds = 10,
+            CompletionTimeoutMinutes = 1,
+            PageLoadToPromptDelayMilliseconds = 0,
+            PromptToSendDelayMilliseconds = 0,
+            MinimumPromptSendIntervalMilliseconds = 0
+        };
         configure?.Invoke(browserOptions);
         var web = Options.Create(new ChatGptWebOptions());
         Manager = new BrowserSessionManager(Options.Create(browserOptions), web, [Fake], NullLogger<BrowserSessionManager>.Instance);
@@ -390,6 +508,36 @@ public sealed class PlaywrightChatGptClientTests
     }
 
     [Fact]
+    public async Task ConversationState_MapsCloudflareChallengeToBlocked()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.ConversationStateStatus = 403;
+        harness.Fake.ConversationStateMitigated = "challenge";
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() =>
+            harness.Client.GetConversationStateAsync(BrowserHarness.Identity("token-admin"), "conv-2", Token));
+
+        Assert.Equal(ChatGptFailure.Blocked, error.Failure);
+        Assert.Contains("verifica", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ConversationState_TimesOutWhenTheWebBackendDoesNotRespond()
+    {
+        await using var harness = new BrowserHarness(options => options.NavigationTimeoutSeconds = 1);
+        harness.Fake.ConversationStateDelayMilliseconds = 5_000;
+        var startedAt = System.Diagnostics.Stopwatch.StartNew();
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() =>
+            harness.Client.GetConversationStateAsync(BrowserHarness.Identity("token-admin"), "conv-2", Token));
+
+        Assert.Equal(ChatGptFailure.Upstream, error.Failure);
+        Assert.Contains("non raggiungibile", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(startedAt.Elapsed < TimeSpan.FromSeconds(3),
+            $"La lettura dello stato ha atteso il browser per {startedAt.Elapsed}.");
+    }
+
+    [Fact]
     public async Task Complete_TypesPromptAppliesModelThinkingAndStreamsTheAnswer()
     {
         await using var harness = new BrowserHarness();
@@ -478,6 +626,161 @@ public sealed class PlaywrightChatGptClientTests
     }
 
     [Fact]
+    public async Task SubmitPrompt_WaitsAfterTheComposerReceivesTheText()
+    {
+        await using var harness = new BrowserHarness(options =>
+            options.PromptToSendDelayMilliseconds = 600);
+        harness.Fake.Layout = "modern-button";
+        var identity = BrowserHarness.Identity("token-admin");
+
+        await harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget("project-typing-pause", "conv-1", "g-p-alpha"), "Continua il lavoro", null, Token);
+
+        var session = harness.Manager.Find(identity.EndpointId)!;
+        var tab = await session.GetOrOpenTabAsync("project-typing-pause", Token);
+        var elapsed = await tab.Page.EvaluateAsync<double>(
+            "() => globalThis.__lfTestSendAt - globalThis.__lfTestTypedAt");
+        Assert.True(elapsed >= 500, $"Il prompt è partito dopo soli {elapsed:0} ms dalla scrittura.");
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_WaitsForWindowLoadBeforeTypingIntoANewTab()
+    {
+        await using var harness = new BrowserHarness(options => options.NavigationTimeoutSeconds = 5);
+        harness.Fake.Layout = "modern-button";
+        harness.Fake.PageLoadResourceDelayMilliseconds = 2_000;
+        var identity = BrowserHarness.Identity("token-admin");
+        const string tabKey = "project-wait-for-load";
+
+        var submission = harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget(tabKey, "conv-1", "g-p-alpha"), "Aspetta il caricamento", null, Token);
+
+        ProjectTab? tab = null;
+        for (var attempt = 0; attempt < 100 && tab is null; attempt++)
+        {
+            tab = harness.Manager.Find(identity.EndpointId)?.FindTab(tabKey);
+            if (tab is null)
+                await Task.Delay(20, Token);
+        }
+        Assert.NotNull(tab);
+        var readyState = "loading";
+        for (var attempt = 0; attempt < 100 && readyState != "interactive"; attempt++)
+        {
+            try
+            {
+                readyState = await tab.Page.EvaluateAsync<string>("() => document.readyState");
+            }
+            catch (PlaywrightException)
+            {
+            }
+            if (readyState != "interactive")
+                await Task.Delay(20, Token);
+        }
+
+        Assert.Equal("interactive", readyState);
+        await Task.Delay(300, Token);
+        var typedBeforeLoad = await tab.Page.EvaluateAsync<bool>(
+            "() => typeof globalThis.__lfTestTypedAt === 'number'");
+        var outcome = await submission;
+
+        Assert.Equal(SubmissionOutcome.Confirmed, outcome);
+        Assert.False(typedBeforeLoad, "Il prompt è stato digitato mentre la pagina non aveva ancora completato load.");
+        Assert.Equal("complete", await tab.Page.EvaluateAsync<string>(
+            "() => globalThis.__lfTestReadyStateWhenTyped"));
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_WaitsAfterWindowLoadBeforeTypingIntoAReopenedTab()
+    {
+        await using var harness = new BrowserHarness(options =>
+            options.PageLoadToPromptDelayMilliseconds = 600);
+        harness.Fake.Layout = "modern-button";
+        var identity = BrowserHarness.Identity("token-admin");
+        const string tabKey = "project-reopened-settle";
+        var target = new PromptTarget(tabKey, "conv-1", "g-p-alpha");
+
+        await harness.Client.SubmitPromptAsync(identity, target, "Primo", null, Token);
+        await harness.Client.CloseTabAsync(identity.EndpointId, tabKey);
+        await harness.Client.SubmitPromptAsync(identity, target, "Secondo", null, Token);
+
+        var tab = await harness.Manager.Find(identity.EndpointId)!.GetOrOpenTabAsync(tabKey, Token);
+        var elapsed = await tab.Page.EvaluateAsync<double>(
+            "() => globalThis.__lfTestTypedAt - globalThis.__lfTestLoadAt");
+        Assert.True(elapsed >= 500,
+            $"La tab riaperta ha ricevuto il testo dopo soli {elapsed:0} ms dal load.");
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_DoesNotRepeatPageLoadDelayForAStableTab()
+    {
+        await using var harness = new BrowserHarness(options =>
+            options.PageLoadToPromptDelayMilliseconds = 600);
+        harness.Fake.Layout = "modern-button";
+        var identity = BrowserHarness.Identity("token-admin");
+        var target = new PromptTarget("project-stable-settle", "conv-1", "g-p-alpha");
+
+        await harness.Client.SubmitPromptAsync(identity, target, "Primo", null, Token);
+        var startedAt = System.Diagnostics.Stopwatch.StartNew();
+        await harness.Client.SubmitPromptAsync(identity, target, "Secondo", null, Token);
+
+        Assert.True(startedAt.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"La tab stabile ha ripetuto l'attesa dopo il load: {startedAt.Elapsed.TotalMilliseconds:0} ms.");
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_SpacesSendsAcrossDifferentProjectTabs()
+    {
+        await using var harness = new BrowserHarness(options =>
+            options.MinimumPromptSendIntervalMilliseconds = 1_000);
+        harness.Fake.Layout = "modern-button";
+        var identity = BrowserHarness.Identity("token-admin");
+
+        await harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget("project-spaced-a", "conv-1", "g-p-alpha"), "Primo", null, Token);
+        await harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget("project-spaced-b", "conv-2", "g-p-beta"), "Secondo", null, Token);
+
+        var sends = harness.Fake.To("/backend-api/f/conversation").OrderBy(request => request.At).ToList();
+        Assert.Equal(2, sends.Count);
+        Assert.True(sends[1].At - sends[0].At >= TimeSpan.FromMilliseconds(900),
+            $"Gli invii sono distanti solo {(sends[1].At - sends[0].At).TotalMilliseconds:0} ms.");
+    }
+
+    [Fact]
+    public async Task EnsureConversationTab_AdoptsAnAlreadyOpenUserPageWithTheSameConversation()
+    {
+        await using var harness = new BrowserHarness();
+        var identity = BrowserHarness.Identity("token-admin");
+        var session = await harness.Manager.GetSessionAsync(identity, Token);
+        var userPage = await session.Context.NewPageAsync();
+        await userPage.GotoAsync("https://chatgpt.com/g/g-p-alpha-name/c/conv-1",
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+
+        await harness.Client.EnsureConversationTabAsync(identity,
+            new PromptTarget("project-existing", "conv-1", "g-p-alpha"), Token);
+        var adopted = await session.GetOrOpenTabAsync("project-existing", Token);
+
+        Assert.Same(userPage, adopted.Page);
+        Assert.Equal(1, harness.Fake.Requests.Count(request =>
+            request.Method == "GET" && request.PathAndQuery == "/g/g-p-alpha-name/c/conv-1"));
+    }
+
+    [Fact]
+    public async Task SubmitPrompt_ReusesTheOpenConversationTabWithoutReloadingTheUrl()
+    {
+        await using var harness = new BrowserHarness();
+        var identity = BrowserHarness.Identity("token-admin");
+        var target = new PromptTarget("project-reuse", "conv-1", "g-p-alpha");
+
+        await harness.Client.SubmitPromptAsync(identity, target, "Primo", null, Token);
+        await harness.Client.SubmitPromptAsync(identity, target, "Secondo", null, Token);
+
+        Assert.Single(harness.Fake.Requests, request =>
+            request.Method == "GET" && request.PathAndQuery == "/c/conv-1");
+        Assert.Equal(2, harness.Fake.To("/backend-api/f/conversation").Count());
+    }
+
+    [Fact]
     public async Task ChangedSettings_RecreateContextKeepingLiveCookies()
     {
         await using var harness = new BrowserHarness();
@@ -493,7 +796,7 @@ public sealed class PlaywrightChatGptClientTests
     }
 
     [Fact]
-    public async Task AttachedBrowser_ReleasesOnlyLllmFacadePagesAndKeepsTheUserBrowserOpen()
+    public async Task AttachedBrowser_ReadoptsTheExistingProjectTabAndKeepsTheUserBrowserOpen()
     {
         var port = GetAvailableTcpPort();
         using var host = await Playwright.CreateAsync();
@@ -520,7 +823,8 @@ public sealed class PlaywrightChatGptClientTests
         {
             ConnectOverCdpUrl = $"http://127.0.0.1:{port}",
             ConfirmationTimeoutSeconds = 5,
-            NavigationTimeoutSeconds = 5
+            NavigationTimeoutSeconds = 5,
+            PageLoadToPromptDelayMilliseconds = 0
         };
         var webOptions = Options.Create(new ChatGptWebOptions());
         await using var manager = new BrowserSessionManager(
@@ -528,12 +832,29 @@ public sealed class PlaywrightChatGptClientTests
         var client = new PlaywrightChatGptClient(manager, webOptions, Options.Create(browserOptions));
 
         await client.RefreshSessionAsync(identity, Token);
-        Assert.True(stale.IsClosed);
+        Assert.False(stale.IsClosed);
         Assert.True(legacy.IsClosed);
-        var created = userBrowser.Pages.Count(page => page.Url.StartsWith("https://chatgpt.com", StringComparison.Ordinal));
-        Assert.Equal(1, created);
 
-        await client.ReleaseAsync(identity.EndpointId);
+        await client.SubmitPromptAsync(identity,
+            new PromptTarget("old", "conv-1", "g-p-alpha"), "Continua", null, Token);
+
+        Assert.False(stale.IsClosed);
+        Assert.EndsWith("/c/conv-1", stale.Url, StringComparison.Ordinal);
+        Assert.Equal(2, userBrowser.Pages.Count(page => page.Url.StartsWith("https://chatgpt.com", StringComparison.Ordinal)));
+
+        await manager.DisposeAsync();
+        Assert.False(stale.IsClosed);
+
+        await using var resumedManager = new BrowserSessionManager(
+            Options.Create(browserOptions), webOptions, [], NullLogger<BrowserSessionManager>.Instance);
+        var resumedClient = new PlaywrightChatGptClient(resumedManager, webOptions, Options.Create(browserOptions));
+        await resumedClient.RefreshSessionAsync(identity, Token);
+        await resumedClient.SubmitPromptAsync(identity,
+            new PromptTarget("old", "conv-1", "g-p-alpha"), "Ancora", null, Token);
+        Assert.False(stale.IsClosed);
+        Assert.Equal(2, userBrowser.Pages.Count(page => page.Url.StartsWith("https://chatgpt.com", StringComparison.Ordinal)));
+
+        await resumedClient.ReleaseAsync(identity.EndpointId);
 
         Assert.False(userPage.IsClosed);
         Assert.Equal("Utente", await userPage.TitleAsync());
@@ -601,6 +922,116 @@ public sealed class PlaywrightChatGptClientTests
         Assert.Equal("Riparti da qui", body.RootElement.GetProperty("messages")[0].GetProperty("content").GetProperty("parts")[0].GetString());
 
         await harness.Client.CloseTabAsync(identity.EndpointId, "project-1");
+    }
+
+    [Fact]
+    public async Task StartProjectChat_ReplacesTheLongConversationTabAfterTheNewChatStarts()
+    {
+        await using var harness = new BrowserHarness();
+        var identity = BrowserHarness.Identity("token-admin");
+        const string tabKey = "project-rollover";
+        await harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget(tabKey, "conv-1", "g-p-alpha"), "Continua", null, Token);
+        var session = harness.Manager.Find(identity.EndpointId)!;
+        var oldTab = await session.GetOrOpenTabAsync(tabKey, Token);
+
+        var started = await harness.Client.StartProjectChatAsync(
+            identity, new NewChatTarget(tabKey, "g-p-alpha"), "Riparti da qui", null, Token);
+        var newTab = await session.GetOrOpenTabAsync(tabKey, Token);
+
+        Assert.Equal("conv-1", started.ConversationId);
+        Assert.NotSame(oldTab, newTab);
+        Assert.True(oldTab.Page.IsClosed);
+        Assert.False(newTab.Page.IsClosed);
+    }
+
+    [Fact]
+    public async Task StartProjectChat_UsesEnterImmediatelyWhenTheProjectSendButtonIsDelayed()
+    {
+        await using var harness = new BrowserHarness(options => options.ConfirmationTimeoutSeconds = 3);
+        harness.Fake.Layout = "modern-project-home";
+        harness.Fake.SendButtonDelayMilliseconds = 30_000;
+        var startedAt = System.Diagnostics.Stopwatch.StartNew();
+
+        var started = await harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("token-admin"), new NewChatTarget("project-delayed-send", "g-p-alpha"),
+            "Crea la nuova chat nel project", null, Token);
+
+        Assert.Equal("conv-1", started.ConversationId);
+        Assert.True(startedAt.Elapsed < TimeSpan.FromSeconds(5), $"La nuova chat è partita dopo {startedAt.Elapsed}.");
+        Assert.Single(harness.Fake.To("/backend-api/f/conversation"));
+    }
+
+    [Fact]
+    public async Task StartProjectChat_AcceptsLinksRenderedAsChipsByTheProjectComposer()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.Layout = "modern-project-home";
+        harness.Fake.RichLinkComposer = true;
+        var prompt = "La chat precedente di questo project ha raggiunto il limite di lunghezza.\n\n" +
+            "### Cosa è cambiato\n\n- Commit: https://github.com/example/repo/commit/2f661a5\n" +
+            "La [CI GitHub Actions #44623122001](https://github.com/example/repo/actions/runs/44623122001) continua a fallire.\n\n" +
+            "andiamo avanti con gli sviluppi direttamente su main";
+
+        var started = await harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("token-admin"), new NewChatTarget("project-rich-links", "g-p-alpha"), prompt, null, Token);
+
+        Assert.Equal("conv-1", started.ConversationId);
+        var send = Assert.Single(harness.Fake.To("/backend-api/f/conversation"));
+        using var body = JsonDocument.Parse(send.Body!);
+        Assert.Equal(prompt, body.RootElement.GetProperty("messages")[0].GetProperty("content").GetProperty("parts")[0].GetString());
+    }
+
+    [Theory]
+    [InlineData("La [CI](\nhttps://github.com/o/r/actions/runs/1) continua", "La [CI](https://github.com/o/r/actions/runs/1) continua")]
+    [InlineData("Riparti\n\n\n\nda qui\u00a0adesso\u200b", "Riparti da qui adesso")]
+    [InlineData("Andiamo avanti con le issue aperte su main e chiudi quelle completate…", "Andiamo avanti con le issue aperte su main e chiudi quelle completate...")]
+    public void ComposerContains_ToleratesTheRenderingOfTheRichComposer(string composer, string prompt) =>
+        Assert.True(PlaywrightChatGptClient.ComposerContains(composer, prompt));
+
+    [Theory]
+    [InlineData("", "Continua")]
+    [InlineData("Continua", "Continua con la issue")]
+    [InlineData("La chat precedente di questo project", "La chat precedente di questo project ha raggiunto il limite di lunghezza, riparti da qui")]
+    public void ComposerContains_RejectsAComposerWithoutThePrompt(string composer, string prompt) =>
+        Assert.False(PlaywrightChatGptClient.ComposerContains(composer, prompt));
+
+    [Fact]
+    public async Task StartProjectChat_WaitsUntilProseMirrorExposesTheInsertedPrompt()
+    {
+        await using var harness = new BrowserHarness();
+        harness.Fake.Layout = "modern-button";
+        harness.Fake.HiddenComposerTextReads = 8;
+        var prompt = "La chat precedente ha raggiunto il limite. " + string.Join(' ', Enumerable.Repeat("contesto", 300));
+
+        var started = await harness.Client.StartProjectChatAsync(
+            BrowserHarness.Identity("token-admin"), new NewChatTarget("project-delayed", "g-p-alpha"), prompt, null, Token);
+
+        Assert.Equal("conv-1", started.ConversationId);
+        var send = Assert.Single(harness.Fake.To("/backend-api/f/conversation"));
+        using var body = JsonDocument.Parse(send.Body!);
+        Assert.Equal(prompt, body.RootElement.GetProperty("messages")[0].GetProperty("content").GetProperty("parts")[0].GetString());
+    }
+
+    [Fact]
+    public async Task StartProjectChat_KeepsTheOldTabWhenTheNewChatFails()
+    {
+        await using var harness = new BrowserHarness();
+        var identity = BrowserHarness.Identity("token-admin");
+        const string tabKey = "project-rollover-failed";
+        await harness.Client.SubmitPromptAsync(identity,
+            new PromptTarget(tabKey, "conv-1", "g-p-alpha"), "Continua", null, Token);
+        var session = harness.Manager.Find(identity.EndpointId)!;
+        var oldTab = await session.GetOrOpenTabAsync(tabKey, Token);
+        harness.Fake.ConversationStatus = 429;
+        harness.Fake.ConversationBody = """{"detail":"Too many requests"}""";
+
+        var error = await Assert.ThrowsAsync<ChatGptException>(() => harness.Client.StartProjectChatAsync(
+            identity, new NewChatTarget(tabKey, "g-p-alpha"), "Riparti da qui", null, Token));
+
+        Assert.Equal(ChatGptFailure.RateLimited, error.Failure);
+        Assert.Same(oldTab, await session.GetOrOpenTabAsync(tabKey, Token));
+        Assert.False(oldTab.Page.IsClosed);
     }
 
     [Fact]

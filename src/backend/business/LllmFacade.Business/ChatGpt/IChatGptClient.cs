@@ -60,6 +60,10 @@ public interface IChatGptClient
     Task<ConversationState> GetConversationStateAsync(
         ChatGptIdentity identity, string conversationId, CancellationToken cancellationToken);
 
+    /// <summary>Opens or reuses the tracked conversation tab and leaves it open for future polling.</summary>
+    Task EnsureConversationTabAsync(
+        ChatGptIdentity identity, PromptTarget target, CancellationToken cancellationToken);
+
     /// <summary>Types the prompt in the conversation tab; the tab keeps streaming into <paramref name="liveText"/>.</summary>
     Task<SubmissionOutcome> SubmitPromptAsync(
         ChatGptIdentity identity, PromptTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken);

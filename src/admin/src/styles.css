@@ -120,6 +120,7 @@ td small { display: block; }
 .chevron { color: var(--muted); }
 .snippet { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: .8rem; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; min-height: 2.4em; }
 .tile-error { margin: 0; color: var(--danger); font-size: .8rem; }
+.tile-cooldown { margin: 0; color: var(--warn); font-size: .82rem; font-weight: 600; }
 .tile-body { display: grid; gap: .6rem; border-top: 1px solid var(--border); padding-top: .6rem; min-width: 0; overflow-wrap: anywhere; }
 .tile-body .facts { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
 .tile-body input, .tile-body select, .tile-body textarea { width: 100%; min-width: 0; max-width: 100%; }

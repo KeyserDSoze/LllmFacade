@@ -6,9 +6,10 @@ import type { LogEntry, TrackedProject } from '../../../src/admin/src/api';
 
 const project: TrackedProject = {
   id: 'p1', endpointId: 'e1', endpointName: 'Account', projectId: 'g-p-a', name: 'Alpha', isActive: true,
-  continuationPrompt: 'Continua', targetConversationId: null, autopilotEnabled: true, maxContinuations: null,
+  continuationPrompt: 'Continua', targetConversationId: null, autopilotEnabled: true, batchPaused: false, maxContinuations: null,
   continuationsSent: 0, status: 'Monitoring', currentConversationId: null, lastCheckAt: null, nextCheckAt: null,
-  lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '', chatsCreated: 0, updatedAt: '2026-11-18T10:00:00Z'
+  rateLimitUntil: null, lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '',
+  chatsCreated: 0, updatedAt: '2026-11-18T10:00:00Z'
 };
 
 describe('status dot', () => {
@@ -19,8 +20,14 @@ describe('status dot', () => {
 
   it('is amber while waiting for the next check or for the send confirmation', () => {
     expect(dotKind({ ...project, status: 'Monitoring' })).toBe('pending');
+    expect(dotKind({ ...project, status: 'CoolingDown' })).toBe('pending');
     expect(dotKind({ ...project, status: 'Submitting' })).toBe('pending');
     expect(dotLabel('pending')).toBe('In attesa');
+  });
+
+  it('stays amber during the global ChatGPT cooldown and manual verification pause', () => {
+    expect(dotKind({ ...project, status: 'WaitingRetry', rateLimitUntil: '2026-11-18T10:15:00Z' })).toBe('pending');
+    expect(dotKind({ ...project, status: 'VerificationRequired', lastError: 'Completa la verifica' })).toBe('pending');
   });
 
   it('is red when the connection dropped or an error is pending', () => {

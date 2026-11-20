@@ -16,12 +16,16 @@ public sealed class TrackedProject
     /// <summary>Null means the most recently updated chat of the project.</summary>
     public string? TargetConversationId { get; set; }
     public bool AutopilotEnabled { get; set; }
+    /// <summary>True only when a stop-all command paused this running project; restart-all resumes it.</summary>
+    public bool BatchPaused { get; set; }
     public int? MaxContinuations { get; set; }
     public int ContinuationsSent { get; set; }
     public AutopilotStatus Status { get; set; } = AutopilotStatus.Idle;
     public string? CurrentConversationId { get; set; }
     public DateTimeOffset? LastCheckAt { get; set; }
     public DateTimeOffset? NextCheckAt { get; set; }
+    public DateTimeOffset? RateLimitUntil { get; set; }
+    public DateTimeOffset? LastRateLimitAt { get; set; }
     public DateTimeOffset? LastContinuationAt { get; set; }
     /// <summary>Conversation node after which the last continuation was sent, until the chat moves past it.</summary>
     public string? PendingAfterNodeId { get; set; }
@@ -37,8 +41,10 @@ public enum AutopilotStatus
     Idle,
     Monitoring,
     Generating,
+    CoolingDown,
     Submitting,
     WaitingRetry,
+    VerificationRequired,
     Completed,
     Stopped
 }

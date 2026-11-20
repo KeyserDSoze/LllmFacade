@@ -3,7 +3,14 @@ using LllmFacade.Domain;
 
 namespace LllmFacade.Business.Autopilot;
 
-public sealed record AutopilotSettings(TimeSpan PollInterval, TimeSpan RetryInterval, TimeSpan SubmissionGrace);
+public sealed record AutopilotSettings(
+    TimeSpan PollInterval,
+    TimeSpan RetryInterval,
+    TimeSpan SubmissionGrace,
+    TimeSpan? RateLimitCooldown = null,
+    TimeSpan? CompletionPause = null,
+    TimeSpan? RepeatedRateLimitCooldown = null,
+    TimeSpan? RateLimitRepeatWindow = null);
 
 public enum AutopilotAction
 {
@@ -56,21 +63,32 @@ public static class AutopilotRules
         project.MaxContinuations = maxContinuations;
         project.ContinuationsSent = 0;
         project.AutopilotEnabled = true;
-        project.Status = AutopilotStatus.Monitoring;
-        project.NextCheckAt = now;
-        project.ConsecutiveFailures = 0;
-        project.LastError = null;
-        project.PendingAfterNodeId = null;
+        project.BatchPaused = false;
+        project.Status = project.RateLimitUntil is { } cooldown && cooldown > now
+            ? AutopilotStatus.WaitingRetry
+            : AutopilotStatus.Monitoring;
+        project.NextCheckAt = project.Status == AutopilotStatus.WaitingRetry ? project.RateLimitUntil : now;
+        if (project.Status != AutopilotStatus.WaitingRetry)
+        {
+            project.ConsecutiveFailures = 0;
+            project.LastError = null;
+            project.PendingAfterNodeId = null;
+        }
     }
 
     public static AutopilotAction Observe(
         TrackedProject project, ConversationState state, DateTimeOffset now, AutopilotSettings settings)
     {
+        var wasGenerating = project.Status is AutopilotStatus.Generating;
+        var pendingAdvanced = project.PendingAfterNodeId is not null
+            && state.CurrentNodeId is not null
+            && project.PendingAfterNodeId != state.CurrentNodeId;
         project.LastCheckAt = now;
         project.CurrentConversationId = state.ConversationId;
         project.ConsecutiveFailures = 0;
         project.LastError = null;
-        if (project.PendingAfterNodeId is not null && state.CurrentNodeId is not null && project.PendingAfterNodeId != state.CurrentNodeId)
+        project.RateLimitUntil = null;
+        if (pendingAdvanced)
             project.PendingAfterNodeId = null;
 
         if (state.Phase == ConversationPhase.Generating)
@@ -97,6 +115,15 @@ public static class AutopilotRules
             project.Status = AutopilotStatus.Completed;
             project.NextCheckAt = null;
             return AutopilotAction.Complete;
+        }
+
+        if ((wasGenerating || pendingAdvanced)
+            && settings.CompletionPause is { } completionPause
+            && completionPause > TimeSpan.Zero)
+        {
+            project.Status = AutopilotStatus.CoolingDown;
+            project.NextCheckAt = now + completionPause;
+            return AutopilotAction.Wait;
         }
 
         project.Status = AutopilotStatus.Submitting;
@@ -140,7 +167,93 @@ public static class AutopilotRules
         project.NextCheckAt = now + settings.RetryInterval;
     }
 
+    public static bool Blocked(
+        TrackedProject project, string error, DateTimeOffset now, TimeSpan challengeCooldown)
+    {
+        if (project.Status == AutopilotStatus.VerificationRequired
+            && project.NextCheckAt is { } current && current > now)
+            return false;
+
+        project.LastCheckAt = now;
+        project.ConsecutiveFailures++;
+        project.LastError = error.Length > MaxErrorLength ? error[..MaxErrorLength] : error;
+        project.Status = AutopilotStatus.VerificationRequired;
+        project.RateLimitUntil = null;
+        project.NextCheckAt = now + challengeCooldown;
+        return true;
+    }
+
+    public static bool RateLimited(
+        TrackedProject project, string error, DateTimeOffset now, AutopilotSettings settings, bool repeated = false)
+    {
+        if (project.Status == AutopilotStatus.VerificationRequired
+            && project.NextCheckAt is { } verificationUntil && verificationUntil > now)
+            return false;
+        if (project.RateLimitUntil is { } current && current > now)
+            return false;
+
+        var cooldown = repeated
+            ? settings.RepeatedRateLimitCooldown ?? TimeSpan.FromMinutes(30)
+            : settings.RateLimitCooldown ?? TimeSpan.FromMinutes(15);
+        var until = now + cooldown;
+        project.LastCheckAt = now;
+        project.LastRateLimitAt = now;
+        project.ConsecutiveFailures++;
+        project.LastError = error.Length > MaxErrorLength ? error[..MaxErrorLength] : error;
+        project.Status = AutopilotStatus.WaitingRetry;
+        project.RateLimitUntil = until;
+        project.NextCheckAt = until;
+        return true;
+    }
+
+    public static bool PauseForBatch(TrackedProject project)
+    {
+        if (!project.AutopilotEnabled)
+            return false;
+        project.BatchPaused = true;
+        StopInternal(project);
+        return true;
+    }
+
+    public static bool Resume(TrackedProject project, DateTimeOffset now)
+    {
+        if (!project.IsActive || string.IsNullOrWhiteSpace(project.ContinuationPrompt))
+            return false;
+        if (project.AutopilotEnabled && project.Status != AutopilotStatus.VerificationRequired)
+            return false;
+        ResumeInternal(project, now);
+        return true;
+    }
+
+    public static bool ResumeFromBatch(TrackedProject project, DateTimeOffset now)
+    {
+        if (!project.IsActive || !project.BatchPaused || project.AutopilotEnabled)
+            return false;
+        ResumeInternal(project, now);
+        return true;
+    }
+
+    private static void ResumeInternal(TrackedProject project, DateTimeOffset now)
+    {
+        project.BatchPaused = false;
+        project.AutopilotEnabled = true;
+        var coolingDown = project.RateLimitUntil is { } cooldown && cooldown > now;
+        project.Status = coolingDown ? AutopilotStatus.WaitingRetry : AutopilotStatus.Monitoring;
+        project.NextCheckAt = coolingDown ? project.RateLimitUntil : now;
+        if (!coolingDown)
+        {
+            project.ConsecutiveFailures = 0;
+            project.LastError = null;
+        }
+    }
+
     public static void Stop(TrackedProject project)
+    {
+        project.BatchPaused = false;
+        StopInternal(project);
+    }
+
+    private static void StopInternal(TrackedProject project)
     {
         project.AutopilotEnabled = false;
         project.Status = AutopilotStatus.Stopped;
@@ -149,8 +262,7 @@ public static class AutopilotRules
 
     public static void Deactivate(TrackedProject project)
     {
-        if (project.AutopilotEnabled)
-            Stop(project);
+        Stop(project);
         project.IsActive = false;
     }
 }

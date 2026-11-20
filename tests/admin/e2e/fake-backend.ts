@@ -5,7 +5,8 @@ export type Recorded = { method: string; path: string; body: unknown; headers: R
 type Endpoint = Record<string, unknown> & { id: string; name: string };
 type Tracked = Record<string, unknown> & {
   id: string; endpointId: string; projectId: string; name: string; isActive: boolean; autopilotEnabled: boolean;
-  status: string; continuationPrompt: string; targetConversationId: string | null; maxContinuations: number | null;
+  batchPaused: boolean; rateLimitUntil: string | null; status: string; continuationPrompt: string;
+  targetConversationId: string | null; maxContinuations: number | null;
   continuationsSent: number;
 };
 
@@ -50,9 +51,9 @@ export class FakeBackend {
   track(projectId: string, name: string): Tracked {
     const project: Tracked = {
       id: `t-${projectId}`, endpointId: 'e-1', endpointName: 'Account principale', projectId, name, isActive: true,
-      continuationPrompt: '', targetConversationId: null, autopilotEnabled: false, maxContinuations: null,
+      continuationPrompt: '', targetConversationId: null, autopilotEnabled: false, batchPaused: false, maxContinuations: null,
       continuationsSent: 0, status: 'Idle', currentConversationId: null, lastCheckAt: null, nextCheckAt: null,
-      lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '', chatsCreated: 0,
+      rateLimitUntil: null, lastContinuationAt: null, consecutiveFailures: 0, lastError: null, newChatPrompt: '', chatsCreated: 0,
       updatedAt: '2026-11-18T10:00:00Z'
     };
     this.tracked.push(project);
@@ -150,6 +151,31 @@ export class FakeBackend {
         && (!category || entry.category === category) && (!projectFilter || entry.projectId === projectFilter) && entry.id < before);
       return json(200, { items: rows.slice(0, take), hasMore: rows.length > take });
     }
+    if (path === '/api/projects/autopilot/stop-all' && method === 'POST') {
+      const changed = this.tracked.filter(project => project.isActive && project.autopilotEnabled);
+      for (const project of changed) {
+        Object.assign(project, { autopilotEnabled: false, batchPaused: true, status: 'Stopped', nextCheckAt: null,
+          updatedAt: new Date().toISOString() });
+        this.addLog('Info', 'autopilot', 'Autopilot messo in pausa dal comando globale.', project);
+      }
+      return json(200, { changed: changed.length, projects: changed });
+    }
+    if (path === '/api/projects/autopilot/resume-all' && method === 'POST') {
+      const changed = this.tracked.filter(project =>
+        project.isActive && (!project.autopilotEnabled || project.status === 'VerificationRequired')
+        && project.continuationPrompt.trim().length > 0);
+      for (const project of changed) {
+        Object.assign(project, {
+          autopilotEnabled: true, batchPaused: false,
+          status: project.rateLimitUntil && Date.parse(project.rateLimitUntil) > Date.now() ? 'WaitingRetry' : 'Monitoring',
+          nextCheckAt: project.rateLimitUntil && Date.parse(project.rateLimitUntil) > Date.now()
+            ? project.rateLimitUntil : new Date().toISOString(),
+          lastError: null, consecutiveFailures: 0, updatedAt: new Date().toISOString()
+        });
+        this.addLog('Info', 'autopilot', 'Autopilot ripreso dal comando globale.', project);
+      }
+      return json(200, { changed: changed.length, projects: changed });
+    }
     if (path === '/api/activity/summary') {
       const autopilot = this.tracked.filter(item => item.isActive && item.autopilotEnabled);
       const working = [
@@ -161,7 +187,9 @@ export class FakeBackend {
       ];
       return json(200, {
         working,
-        watching: autopilot.filter(item => item.status === 'Monitoring' || item.status === 'WaitingRetry').length,
+        watching: autopilot.filter(item =>
+          item.status === 'Monitoring' || item.status === 'CoolingDown' || item.status === 'WaitingRetry'
+          || item.status === 'VerificationRequired').length,
         endpoints: this.endpoints.map(endpoint => ({
           id: endpoint.id, name: endpoint.name, isEnabled: endpoint.isEnabled, hasAccessToken: endpoint.hasAccessToken,
           accessTokenExpiresAt: endpoint.accessTokenExpiresAt, lastRefreshAt: endpoint.lastRefreshAt, nextRefreshAt: endpoint.nextRefreshAt,
@@ -195,7 +223,7 @@ export class FakeBackend {
         this.addLog('Info', 'project', 'Project attivato.', project);
         return json(200, project);
       case 'deactivate':
-        Object.assign(project, { isActive: false, autopilotEnabled: false, status: 'Stopped' });
+        Object.assign(project, { isActive: false, autopilotEnabled: false, batchPaused: false, status: 'Stopped' });
         this.addLog('Info', 'project', 'Project disattivato (autopilot fermato).', project);
         return json(200, project);
       case 'conversations':
@@ -213,12 +241,15 @@ export class FakeBackend {
           continuationPrompt: prompt, targetConversationId: body.targetConversationId ?? null, maxContinuations: body.maxContinuations ?? null,
           newChatPrompt: String(body.newChatPrompt ?? '').trim()
         });
-        if (starting) Object.assign(project, { autopilotEnabled: true, status: 'Monitoring' });
+        if (starting) Object.assign(project, {
+          autopilotEnabled: true, batchPaused: false,
+          status: project.rateLimitUntil && Date.parse(project.rateLimitUntil) > Date.now() ? 'WaitingRetry' : 'Monitoring'
+        });
         this.addLog('Info', starting ? 'autopilot' : 'project', starting ? 'Autopilot avviato: primo controllo della chat in corso.' : 'Impostazioni salvate.', project);
         return json(200, project);
       }
       case 'autopilot/stop':
-        Object.assign(project, { autopilotEnabled: false, status: 'Stopped' });
+        Object.assign(project, { autopilotEnabled: false, batchPaused: false, status: 'Stopped' });
         this.addLog('Info', 'autopilot', 'Autopilot fermato.', project);
         return json(200, project);
       default:

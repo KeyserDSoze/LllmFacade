@@ -37,6 +37,7 @@ public static class Startup
         services.AddSingleton<CredentialProtector>();
         services.AddSingleton<ProjectEventHub>();
         services.AddSingleton<AutopilotSignal>();
+        services.AddSingleton<AutopilotCooldownCoordinator>();
         services.AddSingleton<ActivityLog>();
         services.AddSingleton<ActiveRequests>();
         services.Configure<LogOptions>(configuration.GetSection("Logs"));

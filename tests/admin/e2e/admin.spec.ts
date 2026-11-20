@@ -121,6 +121,114 @@ test('carries on the work with the saved prompt and follows the live progress', 
   await expect(card.getByTestId('autopilot-status')).toHaveText('Fermato');
 });
 
+test('stops and resumes all only the autopilots selected by the global command', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  const beta = backend.track('g-p-beta', 'Beta');
+  backend.track('g-p-gamma', 'Gamma');
+  Object.assign(alpha, { autopilotEnabled: true, status: 'Monitoring', continuationPrompt: 'Continua' });
+  Object.assign(beta, { autopilotEnabled: true, status: 'Generating', continuationPrompt: 'Vai avanti' });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  await page.getByRole('button', { name: 'Ferma tutti' }).click();
+  await expect(page.getByText('2 autopilot fermati.')).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Project Alpha' }).getByTestId('autopilot-status'))
+    .toHaveText('In pausa dal comando globale');
+  await expect(page.getByRole('button', { name: 'Ferma tutti' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Riprendi tutti' })).toBeEnabled();
+  await expect(page.getByRole('article', { name: 'Project Gamma' }).getByRole('button', { name: 'Porta avanti il lavoro' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Riprendi tutti' }).click();
+  await expect(page.getByText('2 autopilot riavviati.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Riprendi tutti' })).toBeDisabled();
+  await expect.poll(() => backend.tracked.filter(project => project.autopilotEnabled).map(project => project.name)).toEqual(['Alpha', 'Beta']);
+  expect(backend.tracked.find(project => project.name === 'Gamma')?.autopilotEnabled).toBe(false);
+  expect(backend.requests.some(request => request.path === '/api/projects/autopilot/stop-all')).toBe(true);
+  expect(backend.requests.some(request => request.path === '/api/projects/autopilot/resume-all')).toBe(true);
+});
+
+test('resumes stopped projects even when another autopilot is already running', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  const beta = backend.track('g-p-beta', 'Beta');
+  const gamma = backend.track('g-p-gamma', 'Gamma');
+  Object.assign(alpha, { autopilotEnabled: true, status: 'Generating', continuationPrompt: 'Continua' });
+  Object.assign(beta, { autopilotEnabled: false, status: 'Stopped', continuationPrompt: 'Riparti' });
+  Object.assign(gamma, { autopilotEnabled: false, status: 'Idle', continuationPrompt: '' });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const resume = page.getByRole('button', { name: 'Riprendi tutti' });
+  await expect(resume).toBeEnabled();
+  await resume.click();
+
+  await expect(page.getByText('1 autopilot riavviato.')).toBeVisible();
+  expect(backend.tracked.find(project => project.id === alpha.id)?.autopilotEnabled).toBe(true);
+  expect(backend.tracked.find(project => project.id === beta.id)?.autopilotEnabled).toBe(true);
+  expect(backend.tracked.find(project => project.id === gamma.id)?.autopilotEnabled).toBe(false);
+  await expect(resume).toBeDisabled();
+});
+
+test('shows the global ChatGPT rate-limit cooldown on affected project tiles', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  const until = new Date(Date.now() + 15 * 60_000).toISOString();
+  Object.assign(alpha, {
+    autopilotEnabled: true, status: 'WaitingRetry', rateLimitUntil: until, nextCheckAt: until,
+    lastError: 'Too many requests: pausa globale per 15 minuti.'
+  });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const card = page.getByRole('article', { name: 'Project Alpha' });
+  await expect(card.getByTestId('autopilot-status')).toHaveText('Pausa ChatGPT per troppe richieste');
+  await expect(card.getByText(/Pausa globale ChatGPT fino alle/)).toBeVisible();
+  await expect(card.getByRole('img', { name: 'In attesa' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Riprendi tutti' })).toBeDisabled();
+});
+
+test('shows a manual Cloudflare verification instead of a connection error', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  Object.assign(alpha, {
+    autopilotEnabled: true,
+    continuationPrompt: 'Continua',
+    status: 'VerificationRequired',
+    rateLimitUntil: null,
+    nextCheckAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    lastError: 'ChatGPT richiede una verifica di sicurezza nella pagina.'
+  });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const card = page.getByRole('article', { name: 'Project Alpha' });
+  await expect(card.getByTestId('autopilot-status')).toHaveText('Completa la verifica ChatGPT nel browser');
+  await expect(card.getByRole('img', { name: 'In attesa' })).toBeVisible();
+  await expect(card.getByText(/Connessione persa/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Riprendi tutti' })).toBeEnabled();
+});
+
+test('shows a completed rate-limit cooldown as queued rather than a connection error', async ({ page }) => {
+  const backend = FakeBackend.withEndpoint();
+  const alpha = backend.track('g-p-alpha', 'Alpha');
+  Object.assign(alpha, {
+    autopilotEnabled: true,
+    status: 'WaitingRetry',
+    rateLimitUntil: new Date(Date.now() - 60_000).toISOString(),
+    nextCheckAt: new Date(Date.now() + 3 * 60_000).toISOString(),
+    lastError: 'ChatGPT ha ricevuto un 429: pausa globale per 30 minuti.'
+  });
+  await backend.install(page);
+
+  await page.goto('/#/attivi');
+  const card = page.getByRole('article', { name: 'Project Alpha' });
+  await expect(card.getByTestId('autopilot-status')).toHaveText('In coda dopo la pausa ChatGPT');
+  await expect(card.getByText(/Pausa terminata: nuovo controllo alle/)).toBeVisible();
+  await expect(card.getByRole('img', { name: 'In attesa' })).toBeVisible();
+  await expect(card.getByText(/Connessione persa/)).toHaveCount(0);
+});
+
 test('gives visible feedback when saving settings succeeds or fails', async ({ page }) => {
   const backend = FakeBackend.withEndpoint();
   backend.track('g-p-alpha', 'Alpha');

@@ -17,6 +17,12 @@ public sealed class BrowserOptions
     public int MaxPagesPerEndpoint { get; set; } = 3;
     public int MaxTabsPerEndpoint { get; set; } = 24;
     public int QueueTimeoutSeconds { get; set; } = 120;
+    /// <summary>Deterministic settle time after the latest page load and before the composer receives a prompt.</summary>
+    public int PageLoadToPromptDelayMilliseconds { get; set; } = 120_000;
+    /// <summary>Deterministic pause after the exact prompt reaches the composer and before it is submitted.</summary>
+    public int PromptToSendDelayMilliseconds { get; set; } = 8_000;
+    /// <summary>Minimum deterministic spacing between prompt sends for the same endpoint.</summary>
+    public int MinimumPromptSendIntervalMilliseconds { get; set; } = 60_000;
     public int NavigationTimeoutSeconds { get; set; } = 60;
     public int ConfirmationTimeoutSeconds { get; set; } = 60;
     public int CompletionTimeoutMinutes { get; set; } = 30;
@@ -45,8 +51,10 @@ public sealed class ChatGptWebOptions
     public string ConversationStreamPattern { get; set; } = "^/backend-api/(f/)?conversation$";
     // The current web app has no #prompt-textarea: the composer is a contenteditable textbox inside form[data-chatgpt-composer].
     public string PromptSelector { get; set; } =
+        "form[data-chatgpt-composer][data-composer-placement='home'] [data-composer-markdown][contenteditable='true'][role='textbox']:visible, " +
         "#prompt-textarea:visible, form[data-chatgpt-composer] [contenteditable='true'][role='textbox']:visible, " +
-        "[data-composer-markdown][contenteditable='true']:visible, [contenteditable='true'][role='textbox'][aria-label='Ask ChatGPT']:visible";
+        "[data-composer-markdown][contenteditable='true']:visible, [contenteditable='true'][role='textbox'][aria-label='Ask ChatGPT']:visible, " +
+        "[contenteditable='true'][role='textbox'][aria-label^='New chat in ']:visible";
     public string SendButtonSelector { get; set; } =
         "form[data-chatgpt-composer] button[type='submit']:visible, [data-testid='send-button']:visible, #composer-submit-button:visible, " +
         "button[data-composer-send]:visible, button[aria-label='Send']:visible, button[aria-label='Send prompt']:visible, " +

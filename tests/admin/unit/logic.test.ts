@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyImported, countCookies, curlExample, emptyEndpointForm, formatHeaderLines, fromEndpoint,
-  importBrowserHeaders, parseHeaderLines, relativeExpiry, sortConversations, statusLabel, toEndpointInput
+  importBrowserHeaders, parseHeaderLines, projectStatusLabel, rateLimitState, relativeExpiry,
+  sortConversations, statusLabel, toEndpointInput
 } from '../../../src/admin/src/logic';
 import type { Endpoint } from '../../../src/admin/src/api';
 
@@ -155,7 +156,35 @@ describe('project views', () => {
 
   it('labels autopilot states in Italian', () => {
     expect(statusLabel('Generating')).toBe('ChatGPT sta lavorando');
+    expect(statusLabel('CoolingDown')).toBe('Pausa del thread prima del prossimo invio');
     expect(statusLabel('WaitingRetry')).toBe('Connessione persa: nuovo tentativo tra poco');
+    expect(statusLabel('VerificationRequired')).toBe('Completa la verifica ChatGPT nel browser');
+  });
+
+  it('distinguishes ChatGPT cooldown, queued retry and a real connection error', () => {
+    const now = Date.parse('2026-11-20T14:00:00Z');
+    const base = {
+      autopilotEnabled: true,
+      batchPaused: false,
+      status: 'WaitingRetry' as const,
+      rateLimitUntil: '2026-11-20T14:15:00Z',
+      nextCheckAt: '2026-11-20T14:15:00Z'
+    };
+
+    expect(rateLimitState(base, now)).toBe('cooldown');
+    expect(projectStatusLabel(base, now)).toBe('Pausa ChatGPT per troppe richieste');
+
+    const queued = {
+      ...base,
+      rateLimitUntil: '2026-11-20T13:59:00Z',
+      nextCheckAt: '2026-11-20T14:03:00Z'
+    };
+    expect(rateLimitState(queued, now)).toBe('queued');
+    expect(projectStatusLabel(queued, now)).toBe('In coda dopo la pausa ChatGPT');
+
+    const failed = { ...base, rateLimitUntil: null, nextCheckAt: '2026-11-20T14:01:00Z' };
+    expect(rateLimitState(failed, now)).toBeNull();
+    expect(projectStatusLabel(failed, now)).toBe('Connessione persa: nuovo tentativo tra poco');
   });
 
   it('describes token expiry', () => {

@@ -99,6 +99,31 @@ public sealed class AutopilotLogRulesTests
     }
 
     [Fact]
+    public void Describe_VerificationRequired_ExplainsThatAutomationIsPaused()
+    {
+        var entries = AutopilotLogRules.Describe(
+            Snap(AutopilotStatus.Generating),
+            Snap(AutopilotStatus.VerificationRequired, "ChatGPT richiede verifica"));
+
+        var entry = Assert.Single(entries);
+        Assert.Equal(ActivityLevel.Warning, entry.Level);
+        Assert.Contains("verifica manuale", entry.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pausa", entry.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Describe_CoolingDown_ExplainsThePerThreadPause()
+    {
+        var entries = AutopilotLogRules.Describe(
+            Snap(AutopilotStatus.Generating, sent: 1), Snap(AutopilotStatus.CoolingDown, sent: 1));
+
+        var entry = Assert.Single(entries);
+        Assert.Equal(ActivityLevel.Info, entry.Level);
+        Assert.Contains("thread", entry.Message);
+        Assert.Contains("pausa", entry.Message);
+    }
+
+    [Fact]
     public void Describe_Completed_MentionsTheLimit()
     {
         var entries = AutopilotLogRules.Describe(

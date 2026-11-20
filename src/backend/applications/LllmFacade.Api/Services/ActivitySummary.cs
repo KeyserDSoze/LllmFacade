@@ -75,7 +75,9 @@ public static class ActivitySummaryApi
                     EndpointView.NextRefresh(e), e.LastError))
                 .ToList();
 
-            return new ActivitySummary(working, projects.Count(p => p.Status is AutopilotStatus.Monitoring or AutopilotStatus.WaitingRetry),
+            return new ActivitySummary(working,
+                projects.Count(p => p.Status is AutopilotStatus.Monitoring or AutopilotStatus.CoolingDown
+                    or AutopilotStatus.WaitingRetry or AutopilotStatus.VerificationRequired),
                 endpoints, time.GetUtcNow());
         }).RequireAuthorization(AdminAuth.AdminPolicy);
     }

@@ -55,7 +55,10 @@ public sealed class BrowserSessionManager(
             }
 
             _sessions.TryRemove(identity.EndpointId, out _);
-            await existing.DisposeAsync();
+            if (string.IsNullOrWhiteSpace(_browserOptions.ConnectOverCdpUrl))
+                await existing.DisposeAsync();
+            else
+                await existing.DetachAsync();
             return _sessions[identity.EndpointId] = await CreateAsync(identity with { StorageStateJson = storageState }, fingerprint);
         }
         finally
@@ -82,7 +85,7 @@ public sealed class BrowserSessionManager(
         {
             context = browser.Contexts.FirstOrDefault()
                 ?? throw new InvalidOperationException("Il browser collegato non espone un contesto: aprire Chrome normalmente e collegarsi di nuovo.");
-            await CloseStaleOwnedPagesAsync(context, identity.EndpointId);
+            await CloseLegacyOwnedPagesAsync(context, identity.EndpointId);
             logger.LogInformation("Contesto Chromium collegato a CDP usato per l'endpoint {EndpointId}.", identity.EndpointId);
         }
         else
@@ -106,21 +109,24 @@ public sealed class BrowserSessionManager(
             logger.LogInformation("Contesto browser isolato creato per l'endpoint {EndpointId}.", identity.EndpointId);
         }
 
-        return new EndpointBrowserSession(identity, fingerprint, context, _webOptions, _browserOptions, ownsContext: !attached);
+        var session = new EndpointBrowserSession(identity, fingerprint, context, _webOptions, _browserOptions, ownsContext: !attached);
+        if (attached)
+            await session.AdoptOwnedPagesAsync();
+        return session;
     }
 
-    private static async Task CloseStaleOwnedPagesAsync(IBrowserContext context, Guid endpointId)
+    private static async Task CloseLegacyOwnedPagesAsync(IBrowserContext context, Guid endpointId)
     {
         var prefix = endpointId.ToString("N") + ":";
         foreach (var page in context.Pages.ToArray())
         {
             try
             {
-                var owned = await page.EvaluateAsync<bool>(
-                    "prefix => (typeof globalThis.__lllmFacadeOwnedPage === 'string' && globalThis.__lllmFacadeOwnedPage.startsWith(prefix)) " +
-                    "|| !!globalThis.__lfHooked || typeof globalThis.__lfStream === 'function'",
+                var legacy = await page.EvaluateAsync<bool>(
+                    "prefix => typeof globalThis.__lllmFacadeOwnedPage !== 'string' " +
+                    "&& (!!globalThis.__lfHooked || typeof globalThis.__lfStream === 'function')",
                     prefix);
-                if (owned)
+                if (legacy)
                     await page.CloseAsync();
             }
             catch (PlaywrightException)
@@ -176,8 +182,15 @@ public sealed class BrowserSessionManager(
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var endpointId in _sessions.Keys)
-            await ReleaseAsync(endpointId);
+        foreach (var endpointId in _sessions.Keys.ToArray())
+        {
+            if (!_sessions.TryRemove(endpointId, out var session))
+                continue;
+            if (string.IsNullOrWhiteSpace(_browserOptions.ConnectOverCdpUrl))
+                await session.DisposeAsync();
+            else
+                await session.DetachAsync();
+        }
         if (_browser is not null && string.IsNullOrWhiteSpace(_browserOptions.ConnectOverCdpUrl))
             await _browser.CloseAsync();
         _playwright?.Dispose();
@@ -190,13 +203,16 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
     private readonly BrowserOptions _browser;
     private readonly SemaphoreSlim _controlLock = new(1, 1);
     private readonly SemaphoreSlim _tabLock = new(1, 1);
+    private readonly SemaphoreSlim _promptSendLock = new(1, 1);
     private readonly SemaphoreSlim _tabSlots;
     private readonly ConcurrentDictionary<string, ProjectTab> _tabs = new();
     private readonly ConcurrentDictionary<IPage, byte> _ownedPages = new();
+    private readonly ConcurrentDictionary<IPage, DateTimeOffset> _pageLoadCompletedAt = new();
     private readonly Dictionary<(string Name, string Domain, string Path), string> _initialValues;
     private readonly bool _ownsContext;
     private readonly string _initScript;
     private IPage? _controlPage;
+    private DateTimeOffset? _lastPromptSendAt;
     private volatile bool _closed;
 
     public EndpointBrowserSession(
@@ -229,16 +245,118 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
     internal async Task<IPage> NewOwnedPageAsync(string? projectKey = null)
     {
         var page = await Context.NewPageAsync();
-        var marker = $"{EndpointId:N}:{projectKey ?? "page"}";
+        await ConfigureOwnedPageAsync(page, $"{EndpointId:N}:{projectKey ?? "page"}");
+        return page;
+    }
+
+    internal async Task AdoptOwnedPagesAsync()
+    {
+        var controlMarker = EndpointId.ToString("N") + ":page";
+        var projectPrefix = EndpointId.ToString("N") + ":project:";
+        foreach (var page in Context.Pages.ToArray())
+        {
+            string? marker;
+            try
+            {
+                marker = await page.EvaluateAsync<string?>(
+                    "() => typeof globalThis.__lllmFacadeOwnedPage === 'string' ? globalThis.__lllmFacadeOwnedPage : null");
+            }
+            catch (PlaywrightException)
+            {
+                continue;
+            }
+
+            if (marker == controlMarker && (_controlPage is null || _controlPage.IsClosed))
+            {
+                await ConfigureOwnedPageAsync(page, controlMarker);
+                _controlPage = page;
+                continue;
+            }
+            if (marker is null || !marker.StartsWith(projectPrefix, StringComparison.Ordinal))
+                continue;
+
+            var key = marker[projectPrefix.Length..];
+            if (key.Length == 0 || page.IsClosed)
+                continue;
+            await _tabSlots.WaitAsync();
+            var tab = new ProjectTab(page);
+            try
+            {
+                await ConfigureOwnedPageAsync(page, marker);
+                await BindProjectTabAsync(page, tab);
+                page.Close += (_, _) =>
+                {
+                    if (_tabs.TryRemove(new KeyValuePair<string, ProjectTab>(key, tab)))
+                        _tabSlots.Release();
+                };
+                if (_tabs.TryRemove(key, out var duplicate))
+                    await duplicate.Page.CloseAsync();
+                _tabs[key] = tab;
+            }
+            catch
+            {
+                _tabSlots.Release();
+                throw;
+            }
+        }
+    }
+
+    private async Task ConfigureOwnedPageAsync(IPage page, string marker)
+    {
         await page.AddInitScriptAsync($"globalThis.__lllmFacadeOwnedPage = {JsonSerializer.Serialize(marker)};");
+        await page.AddInitScriptAsync(_initScript);
         await page.EvaluateAsync("marker => globalThis.__lllmFacadeOwnedPage = marker", marker);
-        _ownedPages[page] = 0;
-        page.Close += (_, _) => _ownedPages.TryRemove(page, out _);
+        await page.EvaluateAsync(_initScript);
+        if (_ownedPages.TryAdd(page, 0))
+        {
+            _pageLoadCompletedAt[page] = DateTimeOffset.UtcNow;
+            page.Load += (_, _) => _pageLoadCompletedAt[page] = DateTimeOffset.UtcNow;
+            page.Close += (_, _) =>
+            {
+                _ownedPages.TryRemove(page, out _);
+                _pageLoadCompletedAt.TryRemove(page, out _);
+            };
+        }
         var timeout = (float)TimeSpan.FromSeconds(_browser.NavigationTimeoutSeconds).TotalMilliseconds;
         page.SetDefaultTimeout(timeout);
         page.SetDefaultNavigationTimeout(timeout);
-        await page.AddInitScriptAsync(_initScript);
-        return page;
+    }
+
+    internal async Task WaitForPageToSettleAsync(IPage page, CancellationToken cancellationToken)
+    {
+        await page.WaitForLoadStateAsync(LoadState.Load);
+        var loadedAt = _pageLoadCompletedAt.GetOrAdd(page, DateTimeOffset.UtcNow);
+        var delay = TimeSpan.FromMilliseconds(Math.Max(0, _browser.PageLoadToPromptDelayMilliseconds));
+        var remaining = delay - (DateTimeOffset.UtcNow - loadedAt);
+        if (remaining > TimeSpan.Zero)
+            await Task.Delay(remaining, cancellationToken);
+    }
+
+    private static Task BindProjectTabAsync(IPage page, ProjectTab tab) =>
+        page.ExposeFunctionAsync<string, string, bool>("__lfStream", tab.OnSignal);
+
+    internal async Task PacePromptSendAsync(Func<Task> send, CancellationToken cancellationToken)
+    {
+        await _promptSendLock.WaitAsync(cancellationToken);
+        var sending = false;
+        try
+        {
+            var interval = TimeSpan.FromMilliseconds(Math.Max(0, _browser.MinimumPromptSendIntervalMilliseconds));
+            if (_lastPromptSendAt is { } lastAttempt)
+            {
+                var remaining = interval - (DateTimeOffset.UtcNow - lastAttempt);
+                if (remaining > TimeSpan.Zero)
+                    await Task.Delay(remaining, cancellationToken);
+            }
+            sending = true;
+            await send();
+        }
+        finally
+        {
+            if (sending)
+                _lastPromptSendAt = DateTimeOffset.UtcNow;
+            _promptSendLock.Release();
+        }
     }
 
     /// <summary>Runs <paramref name="action"/> on a same-origin page, the place where the web app itself calls its backend.</summary>
@@ -259,31 +377,31 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         }
     }
 
-    public async Task<ProjectTab> GetOrOpenTabAsync(string key, CancellationToken cancellationToken)
+    public Task<ProjectTab> GetOrOpenTabAsync(string key, CancellationToken cancellationToken) =>
+        GetOrOpenTabAsync(key, conversationId: null, cancellationToken);
+
+    public async Task<ProjectTab> GetOrOpenTabAsync(
+        string key, string? conversationId, CancellationToken cancellationToken)
     {
         await _tabLock.WaitAsync(cancellationToken);
         try
         {
             if (_tabs.TryGetValue(key, out var existing) && !existing.Page.IsClosed)
                 return existing;
-            if (!await _tabSlots.WaitAsync(TimeSpan.FromSeconds(_browser.QueueTimeoutSeconds), cancellationToken))
-                throw new ChatGptException(ChatGptFailure.Busy, "Troppe schede aperte per questo endpoint.");
+            if (conversationId is not null
+                && await FindOpenConversationPageAsync(key, conversationId) is { } openPage)
+            {
+                return await RegisterProjectTabAsync(key, openPage, cancellationToken);
+            }
+            var newPage = await NewOwnedPageAsync("project:" + key);
             try
             {
-                var page = await NewOwnedPageAsync("project:" + key);
-                var tab = new ProjectTab(page);
-                await page.ExposeFunctionAsync<string, string, bool>("__lfStream", tab.OnSignal);
-                page.Close += (_, _) =>
-                {
-                    if (_tabs.TryRemove(new KeyValuePair<string, ProjectTab>(key, tab)))
-                        _tabSlots.Release();
-                };
-                _tabs[key] = tab;
-                return tab;
+                return await RegisterProjectTabAsync(key, newPage, cancellationToken);
             }
             catch
             {
-                _tabSlots.Release();
+                if (!newPage.IsClosed)
+                    await newPage.CloseAsync();
                 throw;
             }
         }
@@ -291,6 +409,121 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         {
             _tabLock.Release();
         }
+    }
+
+    private async Task<IPage?> FindOpenConversationPageAsync(string key, string conversationId)
+    {
+        var expectedMarker = EndpointId.ToString("N") + ":project:" + key;
+        foreach (var page in Context.Pages.ToArray())
+        {
+            if (page.IsClosed || _tabs.Values.Any(tab => ReferenceEquals(tab.Page, page))
+                || !IsConversationPage(page.Url, conversationId))
+                continue;
+            try
+            {
+                var marker = await page.EvaluateAsync<string?>(
+                    "() => typeof globalThis.__lllmFacadeOwnedPage === 'string' ? globalThis.__lllmFacadeOwnedPage : null");
+                if (marker is null || marker == expectedMarker)
+                    return page;
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+        return null;
+    }
+
+    private async Task<ProjectTab> RegisterProjectTabAsync(string key, IPage page, CancellationToken cancellationToken)
+    {
+        if (!await _tabSlots.WaitAsync(TimeSpan.FromSeconds(_browser.QueueTimeoutSeconds), cancellationToken))
+            throw new ChatGptException(ChatGptFailure.Busy, "Troppe schede aperte per questo endpoint.");
+        try
+        {
+            await ConfigureOwnedPageAsync(page, EndpointId.ToString("N") + ":project:" + key);
+            var tab = new ProjectTab(page);
+            await BindProjectTabAsync(page, tab);
+            page.Close += (_, _) =>
+            {
+                if (_tabs.TryRemove(new KeyValuePair<string, ProjectTab>(key, tab)))
+                    _tabSlots.Release();
+            };
+            _tabs[key] = tab;
+            return tab;
+        }
+        catch
+        {
+            _tabSlots.Release();
+            throw;
+        }
+    }
+
+    private static bool IsConversationPage(string url, string conversationId)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index + 1 < segments.Length; index++)
+        {
+            if (segments[index] == "c"
+                && Uri.UnescapeDataString(segments[index + 1]).Equals(conversationId, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    internal ProjectTab? FindTab(string key) =>
+        _tabs.TryGetValue(key, out var tab) && !tab.Page.IsClosed ? tab : null;
+
+    internal async Task<ProjectTab> BeginTabReplacementAsync(string key, CancellationToken cancellationToken)
+    {
+        await _tabLock.WaitAsync(cancellationToken);
+        try
+        {
+            var page = await NewOwnedPageAsync("project:" + key);
+            try
+            {
+                var tab = new ProjectTab(page);
+                await BindProjectTabAsync(page, tab);
+                return tab;
+            }
+            catch
+            {
+                if (!page.IsClosed)
+                    await page.CloseAsync();
+                throw;
+            }
+        }
+        finally
+        {
+            _tabLock.Release();
+        }
+    }
+
+    internal async Task PromoteTabReplacementAsync(string key, ProjectTab previous, ProjectTab replacement)
+    {
+        await _tabLock.WaitAsync();
+        try
+        {
+            if (!_tabs.TryGetValue(key, out var current) || !ReferenceEquals(current, previous))
+                throw new InvalidOperationException("La tab del project è cambiata durante l'apertura della nuova chat.");
+            replacement.Page.Close += (_, _) =>
+            {
+                if (_tabs.TryRemove(new KeyValuePair<string, ProjectTab>(key, replacement)))
+                    _tabSlots.Release();
+            };
+            _tabs[key] = replacement;
+        }
+        finally
+        {
+            _tabLock.Release();
+        }
+        await previous.Page.CloseAsync();
+    }
+
+    internal static async Task DiscardTabReplacementAsync(ProjectTab replacement)
+    {
+        if (!replacement.Page.IsClosed)
+            await replacement.Page.CloseAsync();
     }
 
     public async Task CloseTabAsync(string key)
@@ -343,6 +576,16 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
         }
     }
 
+    public Task DetachAsync()
+    {
+        _closed = true;
+        _controlPage = null;
+        _tabs.Clear();
+        _ownedPages.Clear();
+        _pageLoadCompletedAt.Clear();
+        return Task.CompletedTask;
+    }
+
     public async ValueTask DisposeAsync()
     {
         _closed = true;
@@ -366,6 +609,8 @@ internal sealed class EndpointBrowserSession : IAsyncDisposable
             }
             _controlPage = null;
             _tabs.Clear();
+            _ownedPages.Clear();
+            _pageLoadCompletedAt.Clear();
         }
         catch (PlaywrightException)
         {

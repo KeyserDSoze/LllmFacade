@@ -34,6 +34,14 @@ public static class AutopilotLogRules
             return entries;
         }
 
+        if (after.Status == AutopilotStatus.VerificationRequired)
+        {
+            if (before.Status != AutopilotStatus.VerificationRequired || before.LastError != after.LastError)
+                entries.Add(new LogDraft(ActivityLevel.Warning,
+                    "ChatGPT richiede una verifica manuale nel browser collegato; nessun nuovo tentativo verrà inviato durante la pausa."));
+            return entries;
+        }
+
         if (after.Status == AutopilotStatus.WaitingRetry)
         {
             var changed = before.Status != AutopilotStatus.WaitingRetry || before.LastError != after.LastError;
@@ -47,7 +55,10 @@ public static class AutopilotLogRules
             entries.Add(new LogDraft(ActivityLevel.Info,
                 $"Connessione ripristinata dopo {before.ConsecutiveFailures} tentativi falliti."));
 
-        if (after.Status == AutopilotStatus.Completed && before.Status != AutopilotStatus.Completed)
+        if (after.Status == AutopilotStatus.CoolingDown && before.Status != AutopilotStatus.CoolingDown)
+            entries.Add(new LogDraft(ActivityLevel.Info,
+                "Risposta terminata: il thread resta in pausa prima del prossimo prompt."));
+        else if (after.Status == AutopilotStatus.Completed && before.Status != AutopilotStatus.Completed)
             entries.Add(new LogDraft(ActivityLevel.Info,
                 $"Completato: raggiunto il limite di {after.MaxContinuations ?? after.ContinuationsSent} invii."));
         else if (after.Status == AutopilotStatus.Generating && before.Status != AutopilotStatus.Generating)

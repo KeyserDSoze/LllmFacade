@@ -25,9 +25,13 @@ public sealed partial class PlaywrightChatGptClient(
     private readonly BrowserOptions _browser = browserOptions.Value;
 
     private const string FetchScript = """
-        async ([url, headers]) => {
+        async ([url, headers, timeoutMs]) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
           try {
-            const response = await fetch(url, { method: 'GET', headers, credentials: 'include', cache: 'no-store' });
+            const response = await fetch(url, {
+              method: 'GET', headers, credentials: 'include', cache: 'no-store', signal: controller.signal
+            });
             return JSON.stringify({
               status: response.status,
               body: await response.text(),
@@ -36,6 +40,8 @@ public sealed partial class PlaywrightChatGptClient(
             });
           } catch (error) {
             return JSON.stringify({ status: 0, body: String((error && error.message) || error), contentType: '', mitigated: '' });
+          } finally {
+            clearTimeout(timer);
           }
         }
         """;
@@ -105,22 +111,54 @@ public sealed partial class PlaywrightChatGptClient(
         return ChatGptResponses.ParseConversationState(id, await GetJsonAsync(session, identity, path, authorized: true, cancellationToken));
     }
 
+    public async Task EnsureConversationTabAsync(
+        ChatGptIdentity identity, PromptTarget target, CancellationToken cancellationToken)
+    {
+        var conversationId = ChatGptIds.EnsureConversationId(target.ConversationId);
+        var session = await Guard(() => sessions.GetSessionAsync(identity, cancellationToken));
+        var tab = await Guard(() => session.GetOrOpenTabAsync(target.TabKey, conversationId, cancellationToken));
+        await tab.Gate.WaitAsync(cancellationToken);
+        try
+        {
+            await OpenComposerAsync(
+                tab.Page,
+                _web.Url(_web.ConversationPagePath.Replace("{conversationId}", Uri.EscapeDataString(conversationId))),
+                allowFullConversation: true);
+        }
+        catch (Exception error) when (error is PlaywrightException or TimeoutException)
+        {
+            throw new ChatGptException(
+                ChatGptFailure.Upstream,
+                "Tab della chat non disponibile nel browser: " + Short(error.Message),
+                innerException: error);
+        }
+        finally
+        {
+            tab.Gate.Release();
+        }
+    }
+
     public async Task<SubmissionOutcome> SubmitPromptAsync(
         ChatGptIdentity identity, PromptTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken)
     {
         var conversationId = ChatGptIds.EnsureConversationId(target.ConversationId);
         var session = await Guard(() => sessions.GetSessionAsync(identity, cancellationToken));
-        var tab = await Guard(() => session.GetOrOpenTabAsync(target.TabKey, cancellationToken));
+        var tab = await Guard(() => session.GetOrOpenTabAsync(target.TabKey, conversationId, cancellationToken));
         await tab.Gate.WaitAsync(cancellationToken);
         var sendAttempted = false;
         try
         {
             await OpenComposerAsync(tab.Page, _web.Url(_web.ConversationPagePath.Replace("{conversationId}", Uri.EscapeDataString(conversationId))));
+            await session.WaitForPageToSettleAsync(tab.Page, cancellationToken);
             tab.BeginSubmission(liveText);
-            await TypePromptAsync(tab.Page, prompt);
+            await TypePromptAsync(tab.Page, prompt, cancellationToken);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
-            sendAttempted = true;
-            await ClickSendAsync(tab.Page, tab.Started);
+            await PauseAfterTypingAsync(cancellationToken);
+            await session.PacePromptSendAsync(async () =>
+            {
+                sendAttempted = true;
+                await ClickSendAsync(tab.Page, tab.Started);
+            }, cancellationToken);
 
             var completed = await Task.WhenAny(tab.Started, Task.Delay(TimeSpan.FromSeconds(_browser.ConfirmationTimeoutSeconds), cancellationToken));
             cancellationToken.ThrowIfCancellationRequested();
@@ -150,17 +188,29 @@ public sealed partial class PlaywrightChatGptClient(
     {
         var projectId = ChatGptIds.EnsureProjectId(target.ProjectId);
         var session = await Guard(() => sessions.GetSessionAsync(identity, cancellationToken));
-        var tab = await Guard(() => session.GetOrOpenTabAsync(target.TabKey, cancellationToken));
+        var previous = session.FindTab(target.TabKey);
+        var projectUrl = ProjectPageUrl(previous?.Page.Url ?? string.Empty, projectId);
+        var tab = previous is null
+            ? await Guard(() => session.GetOrOpenTabAsync(target.TabKey, cancellationToken))
+            : await Guard(() => session.BeginTabReplacementAsync(target.TabKey, cancellationToken));
         await tab.Gate.WaitAsync(cancellationToken);
         var sendAttempted = false;
+        var promoted = false;
         try
         {
-            await OpenComposerAsync(tab.Page, ProjectPageUrl(tab.Page.Url, projectId));
+            await OpenComposerAsync(tab.Page, projectUrl);
+            await session.WaitForPageToSettleAsync(tab.Page, cancellationToken);
             tab.BeginSubmission(liveText);
-            await TypePromptAsync(tab.Page, prompt);
+            await TypePromptAsync(tab.Page, prompt, cancellationToken);
             await tab.Page.EvaluateAsync("next => { window.__lfNext = next; }", new { prompt });
-            sendAttempted = true;
-            await ClickSendAsync(tab.Page, tab.Started);
+            await PauseAfterTypingAsync(cancellationToken);
+            var preferKeyboard = await tab.Page.Locator(
+                "form[data-chatgpt-composer][data-composer-placement='home']:visible").CountAsync() > 0;
+            await session.PacePromptSendAsync(async () =>
+            {
+                sendAttempted = true;
+                await ClickSendAsync(tab.Page, tab.Started, preferKeyboard: preferKeyboard);
+            }, cancellationToken);
 
             var completed = await Task.WhenAny(tab.Started, Task.Delay(TimeSpan.FromSeconds(_browser.ConfirmationTimeoutSeconds), cancellationToken));
             cancellationToken.ThrowIfCancellationRequested();
@@ -172,6 +222,11 @@ public sealed partial class PlaywrightChatGptClient(
                 ?? throw new ChatGptException(ChatGptFailure.Interface,
                     "Prompt inviato in una nuova chat, ma l'ID della chat non è stato rilevato: controllare il project su ChatGPT.",
                     promptMayHaveBeenSent: true);
+            if (previous is not null)
+            {
+                await session.PromoteTabReplacementAsync(target.TabKey, previous, tab);
+                promoted = true;
+            }
             // A conversation URL can only appear after the project page accepted the new chat; it is also a confirmation
             // when the fetch-hook's initial callback was missed.
             return new StartedChat(conversationId, SubmissionOutcome.Confirmed);
@@ -187,6 +242,8 @@ public sealed partial class PlaywrightChatGptClient(
         finally
         {
             tab.Gate.Release();
+            if (previous is not null && !promoted)
+                await EndpointBrowserSession.DiscardTabReplacementAsync(tab);
         }
     }
 
@@ -294,7 +351,8 @@ public sealed partial class PlaywrightChatGptClient(
             page = await session.NewOwnedPageAsync();
             await page.ExposeFunctionAsync<string, string, bool>("__lfStream", (kind, data) => signals.Writer.TryWrite((kind, data)));
             await OpenComposerAsync(page, NewChatUrl(command));
-            await TypePromptAsync(page, command.Prompt);
+            await session.WaitForPageToSettleAsync(page, cancellationToken);
+            await TypePromptAsync(page, command.Prompt, cancellationToken);
             await page.EvaluateAsync("next => { window.__lfNext = next; }", new
             {
                 model = command.UpstreamModel,
@@ -303,7 +361,8 @@ public sealed partial class PlaywrightChatGptClient(
                 prompt = command.Prompt,
                 temporary = command.TemporaryChat
             });
-            await ClickSendAsync(page);
+            await PauseAfterTypingAsync(cancellationToken);
+            await session.PacePromptSendAsync(() => ClickSendAsync(page), cancellationToken);
 
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromMinutes(_browser.CompletionTimeoutMinutes));
@@ -393,9 +452,18 @@ public sealed partial class PlaywrightChatGptClient(
         return (await answers.Nth(count - 1).InnerTextAsync()).Trim();
     }
 
-    private async Task OpenComposerAsync(IPage page, string url)
+    private async Task OpenComposerAsync(IPage page, string url, bool allowFullConversation = false)
     {
-        var response = await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        IResponse? response = null;
+        if (IsSamePageTarget(page.Url, url))
+        {
+            await page.BringToFrontAsync();
+            await page.WaitForLoadStateAsync(LoadState.Load);
+        }
+        else
+        {
+            response = await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+        }
         if (response is { Status: 403 } && await response.HeaderValueAsync("cf-mitigated") is not null)
             throw Blocked();
         // A short prefix is allowed ("You've reached the ..."), but not a long message that merely quotes the sentence.
@@ -417,22 +485,46 @@ public sealed partial class PlaywrightChatGptClient(
                 $"Casella del prompt non trovata ({_web.PromptSelector}): il layout di ChatGPT potrebbe essere cambiato.");
         }
 
-        if (await banner.IsVisibleAsync())
+        if (await banner.IsVisibleAsync() && !allowFullConversation)
             throw new ChatGptException(ChatGptFailure.ConversationFull, "La chat ha raggiunto il limite di lunghezza di ChatGPT.");
     }
 
-    private async Task ClickSendAsync(IPage page, Task<int>? requestStarted = null)
+    private static bool IsSamePageTarget(string currentUrl, string requestedUrl)
+    {
+        if (!Uri.TryCreate(currentUrl, UriKind.Absolute, out var current)
+            || !Uri.TryCreate(requestedUrl, UriKind.Absolute, out var requested)
+            || !string.Equals(current.GetLeftPart(UriPartial.Authority), requested.GetLeftPart(UriPartial.Authority), StringComparison.Ordinal))
+            return false;
+
+        var currentConversation = ConversationUrl().Match(currentUrl);
+        var requestedConversation = ConversationUrl().Match(requestedUrl);
+        if (currentConversation.Success && requestedConversation.Success)
+            return string.Equals(currentConversation.Groups[1].Value, requestedConversation.Groups[1].Value, StringComparison.Ordinal);
+
+        return string.Equals(current.PathAndQuery, requested.PathAndQuery, StringComparison.Ordinal);
+    }
+
+    private async Task ClickSendAsync(
+        IPage page, Task<int>? requestStarted = null, bool preferKeyboard = false)
     {
         var box = page.Locator(_web.PromptSelector).First;
         var send = page.Locator(_web.SendButtonSelector).First;
         var previousUrl = page.Url;
+        if (preferKeyboard)
+        {
+            // No click: in a long draft it could land on a link chip; Enter keeps the caret where the insertion ended.
+            await box.PressAsync("Enter");
+            if (await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
+                return;
+        }
+
         try
         {
             // ChatGPT replaces the voice control with a submit control after its editor state updates.
             await send.WaitForAsync(new LocatorWaitForOptions
             {
                 State = WaitForSelectorState.Visible,
-                Timeout = 2_000
+                Timeout = 5_000
             });
             if (await send.IsEnabledAsync())
                 await send.ClickAsync();
@@ -447,10 +539,14 @@ public sealed partial class PlaywrightChatGptClient(
         if (await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
             return;
 
-        await box.PressAsync("Enter");
-        if (!await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
-            throw new ChatGptException(ChatGptFailure.Interface,
-                "Il composer contiene il testo, ma ChatGPT non ha accettato né il click né il submit nativo: controllare il form.");
+        if (!preferKeyboard)
+        {
+            await box.PressAsync("Enter");
+            if (await ComposerAcceptedAsync(page, box, previousUrl, requestStarted))
+                return;
+        }
+        throw new ChatGptException(ChatGptFailure.Interface,
+            "Il composer contiene il testo, ma ChatGPT non ha accettato né Enter né il submit nativo: controllare il form.");
     }
 
     private static async Task<bool> ComposerAcceptedAsync(
@@ -465,8 +561,7 @@ public sealed partial class PlaywrightChatGptClient(
                 return true;
             if (page.Url != previousUrl && ConversationUrl().IsMatch(page.Url))
                 return true;
-            if (!await box.IsVisibleAsync() || string.IsNullOrWhiteSpace(
-                    NormalizeComposerText(await box.InnerTextAsync())))
+            if (!await box.IsVisibleAsync() || CompactComposerText(await ReadComposerTextAsync(box)).Length == 0)
                 return true;
             await Task.Delay(100);
         }
@@ -475,33 +570,97 @@ public sealed partial class PlaywrightChatGptClient(
     }
 
     /// <summary>Types in the visible composer so the web app receives the same editor events as a user.</summary>
-    private async Task TypePromptAsync(IPage page, string prompt)
+    private Task PauseAfterTypingAsync(CancellationToken cancellationToken) =>
+        Task.Delay(Math.Max(0, _browser.PromptToSendDelayMilliseconds), cancellationToken);
+
+    private async Task TypePromptAsync(
+        IPage page, string prompt, CancellationToken cancellationToken)
     {
         var box = page.Locator(_web.PromptSelector).First;
         await box.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        if (ComposerContains(await ReadComposerTextAsync(box), prompt))
+            return;
+
         await box.ClickAsync();
         await box.PressAsync("ControlOrMeta+A");
         await box.PressAsync("Backspace");
         await page.Keyboard.InsertTextAsync(prompt);
+        if (await WaitForComposerTextAsync(box, prompt, cancellationToken))
+            return;
 
-        var current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
-        if (!ComposerContains(current, prompt))
-        {
-            await box.FillAsync(prompt);
-            current = await box.EvaluateAsync<string>("element => ('value' in element ? element.value : element.innerText) || ''");
-        }
-        if (!ComposerContains(current, prompt))
-            throw new ChatGptException(ChatGptFailure.Interface,
-                "Il testo non è stato acquisito dal composer di ChatGPT: non è stato inviato alcun prompt.");
+        await box.FillAsync(prompt);
+        if (await WaitForComposerTextAsync(box, prompt, cancellationToken))
+            return;
+
+        throw new ChatGptException(ChatGptFailure.Interface,
+            "Il testo non è stato acquisito dal composer di ChatGPT: non è stato inviato alcun prompt.");
     }
 
-    private static bool ComposerContains(string current, string expected) =>
-        string.Equals(NormalizeComposerText(current), NormalizeComposerText(expected), StringComparison.Ordinal)
-        || NormalizeComposerText(current).Contains(NormalizeComposerText(expected), StringComparison.Ordinal);
+    private static Task<string> ReadComposerTextAsync(ILocator box) =>
+        box.EvaluateAsync<string>("""
+            element => {
+              const values = [
+                'value' in element ? element.value : '',
+                element.innerText || '',
+                element.textContent || ''
+              ];
+              return values.reduce((longest, current) => current.length > longest.length ? current : longest, '');
+            }
+            """);
 
-    private static string NormalizeComposerText(string text) =>
-        Regex.Replace((text ?? string.Empty).Replace("\u200b", string.Empty).Replace('\u00a0', ' ')
-            .Replace("\r\n", "\n").Replace('\r', '\n'), "\\s+", " ").Trim();
+    private static async Task<bool> WaitForComposerTextAsync(
+        ILocator box, string prompt, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        do
+        {
+            if (ComposerContains(await ReadComposerTextAsync(box), prompt))
+                return true;
+            await Task.Delay(100, cancellationToken);
+        }
+        while (DateTimeOffset.UtcNow < deadline && !cancellationToken.IsCancellationRequested);
+        return false;
+    }
+
+    /// <summary>
+    /// The rich composer renders the inserted text differently (line breaks around link chips, paragraphs, typographic
+    /// input rules): compare without whitespace, then accept a near-complete word coverage. The fetch hook still sends
+    /// the exact prompt.
+    /// </summary>
+    internal static bool ComposerContains(string current, string expected)
+    {
+        if (CompactComposerText(current).Contains(CompactComposerText(expected), StringComparison.Ordinal))
+            return true;
+
+        var wanted = ComposerWords(expected);
+        if (wanted.Count == 0)
+            return false;
+        var available = ComposerWords(current).CountBy(word => word).ToDictionary();
+        var found = 0;
+        foreach (var word in wanted)
+        {
+            if (available.TryGetValue(word, out var count) && count > 0)
+            {
+                available[word] = count - 1;
+                found++;
+            }
+        }
+        return found >= wanted.Count * MinimumComposerWordCoverage;
+    }
+
+    private const double MinimumComposerWordCoverage = 0.9;
+
+    private static string CompactComposerText(string? text) =>
+        ComposerSpacing().Replace(text ?? string.Empty, string.Empty);
+
+    private static List<string> ComposerWords(string? text) =>
+        ComposerWord().Matches(text ?? string.Empty).Select(match => match.Value.ToLowerInvariant()).ToList();
+
+    [GeneratedRegex("[\\s\\u200B-\\u200D\\u2060\\uFEFF]+")]
+    private static partial Regex ComposerSpacing();
+
+    [GeneratedRegex("[\\p{L}\\p{N}]+")]
+    private static partial Regex ComposerWord();
 
     private string ProjectPageUrl(string currentUrl, string projectId)
     {
@@ -544,8 +703,10 @@ public sealed partial class PlaywrightChatGptClient(
                 headers["oai-device-id"] = deviceId.Value;
         }
 
+        var timeoutMs = Math.Max(1_000, _browser.NavigationTimeoutSeconds * 1_000);
         var json = await Guard(() => session.WithControlPageAsync(
-            page => page.EvaluateAsync<string>(FetchScript, new object[] { _web.Url(pathAndQuery), headers }), cancellationToken));
+            page => page.EvaluateAsync<string>(FetchScript,
+                new object[] { _web.Url(pathAndQuery), headers, timeoutMs }), cancellationToken));
         var result = JsonSerializer.Deserialize<FetchResult>(json, WebJson)
             ?? throw new ChatGptException(ChatGptFailure.Interface, "Risposta del browser non leggibile.");
 

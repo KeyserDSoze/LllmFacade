@@ -6,6 +6,7 @@ using LllmFacade.Business.ChatGpt;
 using LllmFacade.Domain;
 using LllmFacade.Infrastructure.Postgres;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace LllmFacade.Api.Projects;
 
@@ -18,6 +19,8 @@ public sealed record ProjectSettingsRequest(
 
 public sealed record ConversationView(string Id, string Title, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt);
 
+public sealed record BatchAutopilotResult(int Changed, IReadOnlyList<TrackedProjectView> Projects);
+
 /// <summary>Project views (all / active / inactive), chats and the "carry on the work" controls.</summary>
 public static class ProjectAdminApi
 {
@@ -28,6 +31,8 @@ public static class ProjectAdminApi
         var group = app.MapGroup("/api/projects").RequireAuthorization(AdminAuth.AdminPolicy);
         group.MapGet("/", ListTrackedAsync);
         group.MapPost("/", TrackAsync);
+        group.MapPost("/autopilot/stop-all", PauseAllAsync);
+        group.MapPost("/autopilot/resume-all", ResumeAllAsync);
         group.MapGet("/events", StreamAllEventsAsync);
         group.MapPost("/{id:guid}/activate", (Guid id, ProjectCommands commands, CancellationToken cancellationToken) =>
             commands.UpdateAsync(id, project => project.IsActive = true, cancellationToken,
@@ -49,7 +54,7 @@ public static class ProjectAdminApi
             return result;
         });
         group.MapPost("/{id:guid}/autopilot/stop", (Guid id, ProjectCommands commands, CancellationToken cancellationToken) =>
-            commands.UpdateAsync(id, AutopilotRules.Stop, cancellationToken, closeTab: true,
+            commands.UpdateAsync(id, AutopilotRules.Stop, cancellationToken,
                 log: new LogSpec(ActivityCategories.Autopilot, "Autopilot fermato.", "Arresto rifiutato")));
         group.MapGet("/{id:guid}/conversations", ListConversationsAsync);
         group.MapGet("/{id:guid}/events", StreamEventsAsync);
@@ -130,6 +135,80 @@ public static class ProjectAdminApi
             project.EndpointId, project.Id, project.Name);
         var view = TrackedProjectView.From(project);
         return created ? Results.Created($"/api/projects/{project.Id}", view) : Results.Ok(view);
+    }
+
+    private static async Task<IResult> PauseAllAsync(
+        LllmFacadeDbContext db, ProjectEventHub hub, TimeProvider time, ActivityLog log,
+        CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+        var projects = await db.Projects.Include(p => p.Endpoint)
+            .Where(p => p.IsActive && p.AutopilotEnabled)
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+        var changed = projects.Where(project => AutopilotRules.PauseForBatch(project)).ToList();
+        foreach (var project in changed)
+            project.UpdatedAt = now;
+        if (changed.Count == 0)
+            return Results.Ok(new BatchAutopilotResult(0, []));
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new ApiError("Uno dei project è cambiato nel frattempo: riprovare il comando globale."));
+        }
+        foreach (var project in changed)
+        {
+            hub.PublishStatus(project);
+            await log.InfoAsync(ActivityCategories.Autopilot,
+                "Autopilot messo in pausa dal comando globale: la tab resta aperta.", project.EndpointId, project.Id, project.Name);
+        }
+        return Results.Ok(new BatchAutopilotResult(changed.Count, changed.Select(TrackedProjectView.From).ToList()));
+    }
+
+    private static async Task<IResult> ResumeAllAsync(
+        LllmFacadeDbContext db, ProjectEventHub hub, TimeProvider time, ActivityLog log, AutopilotSignal signal,
+        IOptions<AutopilotOptions> options, CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+        var candidates = await db.Projects.Include(p => p.Endpoint)
+            .Where(p => p.IsActive && p.Endpoint!.IsEnabled
+                && (!p.AutopilotEnabled || p.Status == AutopilotStatus.VerificationRequired))
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+        var changed = candidates.Where(project => AutopilotRules.Resume(project, now)).ToList();
+        var stagger = options.Value.ReleaseStagger(changed);
+        for (var index = 0; index < changed.Count; index++)
+        {
+            var project = changed[index];
+            var releaseAt = project.RateLimitUntil is { } cooldown && cooldown > now ? cooldown : now;
+            project.NextCheckAt = releaseAt + stagger * index;
+            project.UpdatedAt = now;
+        }
+        if (changed.Count == 0)
+            return Results.Ok(new BatchAutopilotResult(0, []));
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Results.Conflict(new ApiError("Uno dei project è cambiato nel frattempo: riprovare il comando globale."));
+        }
+        foreach (var project in changed)
+        {
+            hub.PublishStatus(project);
+            var message = project.RateLimitUntil is { } cooldown && cooldown > now
+                ? $"Autopilot avviato dal comando globale: resta in attesa del cooldown ChatGPT fino al {cooldown.ToLocalTime():dd/MM HH:mm}."
+                : "Autopilot avviato dal comando globale: controllo immediato della chat precedente.";
+            await log.InfoAsync(ActivityCategories.Autopilot, message, project.EndpointId, project.Id, project.Name);
+        }
+        signal.Wake();
+        return Results.Ok(new BatchAutopilotResult(changed.Count, changed.Select(TrackedProjectView.From).ToList()));
     }
 
     private static async Task<IResult> ListConversationsAsync(

@@ -175,6 +175,7 @@ public sealed class FakeChatGptClient : IChatGptClient
     public ConcurrentQueue<ChatGptIdentity> Identities { get; } = new();
     public ConcurrentQueue<CompletionCommand> Commands { get; } = new();
     public ConcurrentQueue<(PromptTarget Target, string Prompt)> Submissions { get; } = new();
+    public ConcurrentQueue<PromptTarget> EnsuredTabs { get; } = new();
     public ConcurrentQueue<Guid> Released { get; } = new();
     public ConcurrentQueue<string> ClosedTabs { get; } = new();
 
@@ -190,6 +191,13 @@ public sealed class FakeChatGptClient : IChatGptClient
 
     public Task<ConversationState> GetConversationStateAsync(ChatGptIdentity identity, string conversationId, CancellationToken cancellationToken) =>
         Run(identity, () => State(conversationId));
+
+    public Task EnsureConversationTabAsync(ChatGptIdentity identity, PromptTarget target, CancellationToken cancellationToken) =>
+        Run(identity, () =>
+        {
+            EnsuredTabs.Enqueue(target);
+            return true;
+        });
 
     public Task<SubmissionOutcome> SubmitPromptAsync(
         ChatGptIdentity identity, PromptTarget target, string prompt, IProgress<string>? liveText, CancellationToken cancellationToken) =>

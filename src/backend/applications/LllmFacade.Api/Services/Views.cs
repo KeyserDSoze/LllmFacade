@@ -61,12 +61,14 @@ public sealed record TrackedProjectView(
     string ContinuationPrompt,
     string? TargetConversationId,
     bool AutopilotEnabled,
+    bool BatchPaused,
     int? MaxContinuations,
     int ContinuationsSent,
     AutopilotStatus Status,
     string? CurrentConversationId,
     DateTimeOffset? LastCheckAt,
     DateTimeOffset? NextCheckAt,
+    DateTimeOffset? RateLimitUntil,
     DateTimeOffset? LastContinuationAt,
     int ConsecutiveFailures,
     string? LastError,
@@ -76,8 +78,8 @@ public sealed record TrackedProjectView(
 {
     public static TrackedProjectView From(TrackedProject p) => new(
         p.Id, p.EndpointId, p.Endpoint?.Name ?? string.Empty, p.ProjectId, p.Name, p.IsActive, p.ContinuationPrompt,
-        p.TargetConversationId, p.AutopilotEnabled, p.MaxContinuations, p.ContinuationsSent, p.Status,
-        p.CurrentConversationId, p.LastCheckAt, p.NextCheckAt, p.LastContinuationAt, p.ConsecutiveFailures,
+        p.TargetConversationId, p.AutopilotEnabled, p.BatchPaused, p.MaxContinuations, p.ContinuationsSent, p.Status,
+        p.CurrentConversationId, p.LastCheckAt, p.NextCheckAt, p.RateLimitUntil, p.LastContinuationAt, p.ConsecutiveFailures,
         p.LastError, p.NewChatPrompt, p.ChatsCreated, p.UpdatedAt);
 }
 

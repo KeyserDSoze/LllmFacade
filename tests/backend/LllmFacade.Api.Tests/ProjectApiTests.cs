@@ -110,7 +110,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
         factory.ChatGpt.State = id => new ConversationState(id, "n1", ConversationPhase.Finished, "Fatto", DateTimeOffset.UtcNow);
         await ProcessAsync(project.Id);
         var afterFirst = await GetAsync(admin, project.Id);
-        Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
+        Assert.DoesNotContain(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
         Assert.Equal(submissions + 1, factory.ChatGpt.Submissions.Count);
         var (target, prompt) = factory.ChatGpt.Submissions.Last();
         Assert.Equal("conv-new", target.ConversationId);
@@ -126,7 +126,15 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
         await ProcessAsync(project.Id);
         Assert.Equal(AutopilotStatus.Generating, (await GetAsync(admin, project.Id)).Status);
 
+        var finishedAt = DateTimeOffset.UtcNow;
         factory.ChatGpt.State = id => new ConversationState(id, "n3", ConversationPhase.Finished, "Fatto ancora", DateTimeOffset.UtcNow);
+        await ProcessAsync(project.Id);
+        var coolingDown = await GetAsync(admin, project.Id);
+        Assert.Equal(submissions + 1, factory.ChatGpt.Submissions.Count);
+        Assert.Equal(AutopilotStatus.CoolingDown, coolingDown.Status);
+        Assert.InRange(coolingDown.NextCheckAt!.Value,
+            finishedAt.AddMinutes(9.5), finishedAt.AddMinutes(10.5));
+
         await ProcessAsync(project.Id);
         Assert.Equal(submissions + 2, factory.ChatGpt.Submissions.Count);
 
@@ -136,7 +144,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
         Assert.Equal(submissions + 2, factory.ChatGpt.Submissions.Count);
         Assert.Equal(AutopilotStatus.Completed, completed.Status);
         Assert.False(completed.AutopilotEnabled);
-        Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
+        Assert.DoesNotContain(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
     }
 
     [Fact]
@@ -289,7 +297,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
             await ProcessAsync(project.Id);
 
             var failed = await GetAsync(admin, project.Id);
-            Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
+            Assert.DoesNotContain(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
             Assert.Equal(AutopilotStatus.WaitingRetry, failed.Status);
             Assert.Equal("ChatGPT non raggiungibile.", failed.LastError);
             Assert.Equal(1, failed.ConsecutiveFailures);
@@ -323,7 +331,7 @@ public sealed class ProjectApiTests(ApiFactory factory) : IClassFixture<ApiFacto
 
         var stopped = await (await admin.PostAsync($"/api/projects/{project.Id}/autopilot/stop", null, Token)).ReadAsync<TrackedProjectView>();
         Assert.Equal(AutopilotStatus.Stopped, stopped.Status);
-        Assert.Contains(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
+        Assert.DoesNotContain(project.Id.ToString("N"), factory.ChatGpt.ClosedTabs);
         await factory.WithServiceAsync<AutopilotProcessor>(async processor => due = await processor.FindDueAsync(Token));
         Assert.DoesNotContain(project.Id, due);
     }

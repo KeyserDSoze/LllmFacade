@@ -45,7 +45,7 @@ export type Session = { userName: string; mustChangePassword: boolean };
 
 export type ChatGptProject = { projectId: string; name: string; trackedId: string | null; isActive: boolean };
 
-export type AutopilotStatus = 'Idle' | 'Monitoring' | 'Generating' | 'Submitting' | 'WaitingRetry' | 'Completed' | 'Stopped';
+export type AutopilotStatus = 'Idle' | 'Monitoring' | 'Generating' | 'CoolingDown' | 'Submitting' | 'WaitingRetry' | 'VerificationRequired' | 'Completed' | 'Stopped';
 
 export type TrackedProject = {
   id: string;
@@ -57,12 +57,14 @@ export type TrackedProject = {
   continuationPrompt: string;
   targetConversationId: string | null;
   autopilotEnabled: boolean;
+  batchPaused: boolean;
   maxContinuations: number | null;
   continuationsSent: number;
   status: AutopilotStatus;
   currentConversationId: string | null;
   lastCheckAt: string | null;
   nextCheckAt: string | null;
+  rateLimitUntil: string | null;
   lastContinuationAt: string | null;
   consecutiveFailures: number;
   lastError: string | null;
@@ -72,6 +74,8 @@ export type TrackedProject = {
 };
 
 export type Conversation = { id: string; title: string; createdAt: string | null; updatedAt: string | null };
+
+export type BatchAutopilotResult = { changed: number; projects: TrackedProject[] };
 
 export type ProjectSettings = {
   continuationPrompt: string;
@@ -185,6 +189,8 @@ export const api = {
   startAutopilot: (projectId: string, settings: ProjectSettings) =>
     request<TrackedProject>('POST', `/api/projects/${id(projectId)}/autopilot/start`, settings),
   stopAutopilot: (projectId: string) => request<TrackedProject>('POST', `/api/projects/${id(projectId)}/autopilot/stop`),
+  stopAllAutopilot: () => request<BatchAutopilotResult>('POST', '/api/projects/autopilot/stop-all'),
+  resumeAllAutopilot: () => request<BatchAutopilotResult>('POST', '/api/projects/autopilot/resume-all'),
   conversations: (projectId: string) => request<Conversation[]>('GET', `/api/projects/${id(projectId)}/conversations`),
   eventsUrl: '/api/projects/events',
   summary: () => request<ActivitySummary>('GET', '/api/activity/summary'),

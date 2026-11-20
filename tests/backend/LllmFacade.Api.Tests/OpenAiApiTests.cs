@@ -161,6 +161,118 @@ public sealed class OpenAiApiTests(ApiFactory factory) : IClassFixture<ApiFactor
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ChatCompletions_429_PutsAllRunningProjectsIntoTheGlobalCooldown(bool stream)
+    {
+        var admin = await AdminAsync(factory);
+        var (endpointId, apiKey) = await CreateEndpointAsync(admin);
+        var ids = new List<Guid>();
+        foreach (var (projectId, name) in new[] { ("g-p-api-alpha", "API alpha"), ("g-p-api-beta", "API beta") })
+        {
+            var tracked = await (await admin.PostAsJsonAsync("/api/projects",
+                new { endpointId, projectId, name }, Token)).JsonAsync();
+            var id = tracked.GetProperty("id").GetGuid();
+            ids.Add(id);
+            (await admin.PostAsJsonAsync($"/api/projects/{id}/autopilot/start", new
+            {
+                continuationPrompt = "Continua",
+                targetConversationId = (string?)null,
+                maxContinuations = (int?)null,
+                newChatPrompt = ""
+            }, Token)).EnsureSuccessStatusCode();
+        }
+        await factory.WithDbAsync(async db =>
+        {
+            foreach (var project in db.Projects.Where(project => project.IsActive))
+            {
+                project.LastRateLimitAt = null;
+                project.RateLimitUntil = null;
+                project.NextCheckAt = DateTimeOffset.UtcNow;
+                project.ConsecutiveFailures = 0;
+                project.LastError = null;
+            }
+            await db.SaveChangesAsync(Token);
+        });
+
+        factory.ChatGpt.Failure = new ChatGptException(ChatGptFailure.RateLimited, "Too many requests");
+        var before = DateTimeOffset.UtcNow;
+        try
+        {
+            var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var response = await client.PostAsJsonAsync("/v1/chat/completions",
+                new { model = "chatgpt-auto", stream, messages = new[] { new { role = "user", content = "Ciao" } } }, Token);
+
+            Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        }
+        finally
+        {
+            factory.ChatGpt.Failure = null;
+        }
+
+        var active = await (await admin.GetAsync("/api/projects?state=active", Token)).JsonAsync();
+        foreach (var project in active.EnumerateArray().Where(project => ids.Contains(project.GetProperty("id").GetGuid())))
+        {
+            Assert.True(project.GetProperty("autopilotEnabled").GetBoolean());
+            Assert.Equal("WaitingRetry", project.GetProperty("status").GetString());
+            var until = project.GetProperty("rateLimitUntil").GetDateTimeOffset();
+            Assert.InRange(until, before.AddMinutes(14.5), before.AddMinutes(15.5));
+            Assert.True(project.GetProperty("nextCheckAt").GetDateTimeOffset() >= until);
+            Assert.DoesNotContain(project.GetProperty("id").GetGuid().ToString("N"), factory.ChatGpt.ClosedTabs);
+        }
+    }
+
+    [Fact]
+    public async Task ChatCompletions_Blocked_PausesTheEndpointAutopilotsForManualVerification()
+    {
+        var admin = await AdminAsync(factory);
+        var (endpointId, apiKey) = await CreateEndpointAsync(admin);
+        var ids = new List<Guid>();
+        foreach (var (projectId, name) in new[] { ("g-p-blocked-api-alpha", "Blocked API alpha"), ("g-p-blocked-api-beta", "Blocked API beta") })
+        {
+            var tracked = await (await admin.PostAsJsonAsync("/api/projects",
+                new { endpointId, projectId, name }, Token)).JsonAsync();
+            var id = tracked.GetProperty("id").GetGuid();
+            ids.Add(id);
+            (await admin.PostAsJsonAsync($"/api/projects/{id}/autopilot/start", new
+            {
+                continuationPrompt = "Continua",
+                targetConversationId = (string?)null,
+                maxContinuations = (int?)null,
+                newChatPrompt = ""
+            }, Token)).EnsureSuccessStatusCode();
+        }
+
+        factory.ChatGpt.Failure = new ChatGptException(
+            ChatGptFailure.Blocked, "ChatGPT richiede una verifica di sicurezza nella pagina.");
+        var before = DateTimeOffset.UtcNow;
+        try
+        {
+            var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var response = await client.PostAsJsonAsync("/v1/chat/completions",
+                new { model = "chatgpt-auto", stream = false, messages = new[] { new { role = "user", content = "Ciao" } } }, Token);
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        }
+        finally
+        {
+            factory.ChatGpt.Failure = null;
+        }
+
+        var active = await (await admin.GetAsync("/api/projects?state=active", Token)).JsonAsync();
+        foreach (var project in active.EnumerateArray().Where(project => ids.Contains(project.GetProperty("id").GetGuid())))
+        {
+            Assert.Equal("VerificationRequired", project.GetProperty("status").GetString());
+            Assert.InRange(project.GetProperty("nextCheckAt").GetDateTimeOffset(),
+                before.AddMinutes(29.5), before.AddMinutes(30.5));
+            Assert.True(project.GetProperty("autopilotEnabled").GetBoolean());
+            Assert.DoesNotContain(project.GetProperty("id").GetGuid().ToString("N"), factory.ChatGpt.ClosedTabs);
+        }
+    }
+
     [Fact]
     public async Task ChatCompletions_RefusesDisabledEndpoints()
     {

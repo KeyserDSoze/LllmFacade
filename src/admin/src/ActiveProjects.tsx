@@ -4,7 +4,7 @@ import {
 } from './api';
 import {
   dotKind, dotLabel, formatDateTime, gridColumns, isDirty, levelLabels, parseGrid, parseIdList,
-  sortConversations, statusLabel, tailSnippet, validateStart, type GridChoice
+  projectStatusLabel, rateLimitState, sortConversations, tailSnippet, validateStart, type GridChoice
 } from './logic';
 
 const GRID_KEY = 'lllmfacade.admin.grid';
@@ -26,6 +26,8 @@ export function ActiveProjectsView() {
   const [live, setLive] = useState<Record<string, string>>({});
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
+  const [batchBusy, setBatchBusy] = useState<'stop' | 'resume' | null>(null);
+  const [batchNotice, setBatchNotice] = useState<Notice>(null);
   const [grid, setGrid] = useState<GridChoice>(() => parseGrid(window.localStorage.getItem(GRID_KEY)));
   const [collapsed, setCollapsed] = useState<string[]>(() => parseIdList(window.localStorage.getItem(COLLAPSED_KEY)));
 
@@ -64,6 +66,32 @@ export function ActiveProjectsView() {
 
   const toggle = (id: string) => updateCollapsed(collapsed.includes(id) ? collapsed.filter(item => item !== id) : [...collapsed, id]);
   const working = projects?.filter(project => dotKind(project) === 'working').length ?? 0;
+  const running = projects?.filter(project => project.autopilotEnabled).length ?? 0;
+  const resumable = projects?.filter(project =>
+    (!project.autopilotEnabled || project.status === 'VerificationRequired')
+    && project.continuationPrompt.trim().length > 0).length ?? 0;
+
+  const runBatch = async (action: 'stop' | 'resume') => {
+    setBatchBusy(action);
+    setBatchNotice(null);
+    try {
+      const result = action === 'stop' ? await api.stopAllAutopilot() : await api.resumeAllAutopilot();
+      const changed = new Map(result.projects.map(project => [project.id, project]));
+      setProjects(current => (current ?? [])
+        .map(project => changed.get(project.id) ?? project)
+        .filter(project => project.isActive));
+      const verb = action === 'stop'
+        ? (result.changed === 1 ? 'fermato' : 'fermati')
+        : (result.changed === 1 ? 'riavviato' : 'riavviati');
+      setBatchNotice({ kind: 'ok', text: result.changed > 0
+        ? `${result.changed} autopilot ${verb}.`
+        : `Nessun autopilot da ${action === 'stop' ? 'fermare' : 'riavviare'}.` });
+    } catch (failure) {
+      setBatchNotice({ kind: 'error', text: errorMessage(failure) });
+    } finally {
+      setBatchBusy(null);
+    }
+  };
 
   return (
     <section>
@@ -81,6 +109,14 @@ export function ActiveProjectsView() {
               </button>
             ))}
           </div>
+          <button type="button" className="danger" disabled={batchBusy !== null || running === 0}
+            onClick={() => runBatch('stop')}>
+            {batchBusy === 'stop' ? 'Arresto…' : 'Ferma tutti'}
+          </button>
+          <button type="button" className="primary" disabled={batchBusy !== null || resumable === 0}
+            onClick={() => runBatch('resume')}>
+            {batchBusy === 'resume' ? 'Riavvio…' : 'Riprendi tutti'}
+          </button>
           <button type="button" onClick={() => updateCollapsed((projects ?? []).map(project => project.id))}>Comprimi tutti</button>
           <button type="button" onClick={() => updateCollapsed([])}>Espandi tutti</button>
         </div>
@@ -89,6 +125,8 @@ export function ActiveProjectsView() {
         <p className="hint">{projects.length} project attivi, {working} {working === 1 ? 'sta lavorando' : 'stanno lavorando'}.</p>
       )}
       {error && <p role="alert" className="error">{error}</p>}
+      {batchNotice && <p role={batchNotice.kind === 'error' ? 'alert' : 'status'}
+        className={batchNotice.kind === 'error' ? 'error' : 'ok'}>{batchNotice.text}</p>}
       {projects?.length === 0 && <p className="empty">Nessun project attivo: attivane uno da “Tutti i project”.</p>}
       <div className="mosaic" data-testid="mosaic" style={{ gridTemplateColumns: gridColumns(grid) }}>
         {projects?.map(project => (
@@ -113,6 +151,11 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
   const bodyId = useId();
   const kind = dotKind(project);
   const snippet = tailSnippet(liveText, 160);
+  const rateLimit = rateLimitState(project);
+  const coolingDown = rateLimit === 'cooldown';
+  const rateLimited = rateLimit !== null;
+  const verificationRequired = project.status === 'VerificationRequired';
+  const displayStatus = projectStatusLabel(project);
   const [prompt, setPrompt] = useState(project.continuationPrompt);
   const [target, setTarget] = useState(project.targetConversationId ?? '');
   const [max, setMax] = useState(project.maxContinuations?.toString() ?? '');
@@ -155,14 +198,19 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
         <button type="button" aria-expanded={!collapsed} aria-controls={bodyId} onClick={onToggle}>
           <span className={`dot ${kind}`} role="img" aria-label={dotLabel(kind)} title={dotLabel(kind)} />
           <span className="tile-name">{project.name}</span>
-          <span className="tile-state" data-testid="autopilot-status">{statusLabel(project.status)}</span>
+          <span className="tile-state" data-testid="autopilot-status">{displayStatus}</span>
           <span className="chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
         </button>
       </h2>
       <p className="snippet" data-testid="live-snippet" title={snippet}>
         {snippet || (project.autopilotEnabled ? 'In attesa di testo da ChatGPT…' : 'Autopilot non avviato.')}
       </p>
-      {project.lastError && project.autopilotEnabled && <p className="tile-error">{project.lastError}</p>}
+      {rateLimited && <p className="tile-cooldown" role="status">
+        {coolingDown
+          ? `Pausa globale ChatGPT fino alle ${new Date(project.rateLimitUntil!).toLocaleTimeString('it-IT')}.`
+          : `Pausa terminata: nuovo controllo alle ${new Date(project.nextCheckAt ?? project.rateLimitUntil!).toLocaleTimeString('it-IT')}.`}
+      </p>}
+      {project.lastError && project.autopilotEnabled && !rateLimited && !verificationRequired && <p className="tile-error">{project.lastError}</p>}
       {!collapsed && (
         <div id={bodyId} className="tile-body">
           <dl className="facts">
@@ -170,10 +218,11 @@ function ProjectTile({ project, liveText, collapsed, onToggle, onChange }: {
             <dt>Nuove chat create</dt><dd>{project.chatsCreated}</dd>
             <dt>Ultimo controllo</dt><dd>{formatDateTime(project.lastCheckAt)}</dd>
             <dt>Prossimo controllo</dt><dd>{project.autopilotEnabled ? formatDateTime(project.nextCheckAt) : '—'}</dd>
+            {project.rateLimitUntil && <><dt>Fine pausa ChatGPT</dt><dd>{formatDateTime(project.rateLimitUntil)}</dd></>}
             <dt>Ultimo invio</dt><dd>{formatDateTime(project.lastContinuationAt)}</dd>
             <dt>Endpoint</dt><dd>{project.endpointName}</dd>
           </dl>
-          {project.lastError && <p className="error">{project.lastError}{project.consecutiveFailures > 1 ? ` (tentativi falliti: ${project.consecutiveFailures})` : ''}</p>}
+          {project.lastError && <p className={rateLimited || verificationRequired ? 'hint' : 'error'}>{project.lastError}{project.consecutiveFailures > 1 ? ` (tentativi falliti: ${project.consecutiveFailures})` : ''}</p>}
 
           <ChatList projectId={project.id} target={target} onTarget={setTarget} currentId={project.currentConversationId} />
 
